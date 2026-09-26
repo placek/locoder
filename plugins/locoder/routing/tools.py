@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from . import backends, policy, settings
 from .judge import Judge, JudgeError, Verdict, verdict_dict
@@ -86,6 +87,19 @@ STATUS_SCHEMA = {
 }
 
 
+def git_head(workdir: str) -> Optional[Tuple[str, bool]]:
+    """(HEAD commit, has uncommitted changes) of *workdir*, or None when it is not a readable git checkout."""
+    def git(*argv: str) -> str:
+        return subprocess.run(["git", "-C", workdir, *argv], capture_output=True, text=True,
+                              timeout=10, check=True).stdout
+    try:
+        sha = git("rev-parse", "--verify", "HEAD").strip()
+        dirty = bool(git("status", "--porcelain").strip())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sha, dirty
+
+
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
 
@@ -126,7 +140,11 @@ class Router:
         claude = policy.claude_state(self.ledger, self.clock())
         d = policy.decide(verdict, claude, cfg, judge_error)
         vd, cd = verdict_dict(verdict), claude.as_dict()
-        decision_id = self.ledger.add_decision(brief, args.get("workdir"), d.rung, d.reason, vd, cd)
+        workdir = args.get("workdir") or None
+        head = git_head(workdir) if workdir else None
+        decision_id = self.ledger.add_decision(brief, workdir, d.rung, d.reason, vd, cd,
+                                               commit_sha=head[0] if head else None,
+                                               dirty=head[1] if head else None)
         return _json({"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
                       "judge": vd, "claude": cd})
 

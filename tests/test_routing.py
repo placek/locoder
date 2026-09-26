@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import stat
+import subprocess
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -191,6 +192,7 @@ def test_old_ledger_gains_claude_column_and_keeps_rows(tmp_path):
     assert led.decision("a")["rung"] == "coder"
     assert json.loads(led.decision(new_id)["claude"]) == {"available": True}
     led.add_limit_hit(3, raw="limit", reset_source="fallback")
+    assert led.decision(new_id)["commit_sha"] is None
     rows = led.db.execute("SELECT until, reset_source, raw FROM limit_hits ORDER BY ts").fetchall()
     assert [tuple(r) for r in rows] == [(2, None, None), (3, "fallback", "limit")]
 
@@ -386,6 +388,32 @@ def test_route_with_judge_down_still_decides(router):
     router.test["state"]["verdict"] = None
     d = call(router.route, brief="anything")
     assert d["rung"] == "claude" and d["judge"] is None
+
+
+def _git(repo, *argv):
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+                   check=True, capture_output=True)
+
+
+def test_route_records_the_commit_and_dirty_state_of_a_git_workdir(router, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.txt").write_text("a")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "a")
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    clean = router.ledger.decision(call(router.route, brief="t", workdir=str(repo))["decision_id"])
+    assert clean["commit_sha"] == sha and clean["dirty"] == 0
+    (repo / "test_new.py").write_text("untracked failing test")
+    dirty = router.ledger.decision(call(router.route, brief="t", workdir=str(repo))["decision_id"])
+    assert dirty["commit_sha"] == sha and dirty["dirty"] == 1
+
+
+def test_route_without_git_records_no_commit(router):
+    for workdir in (router.test["proj"], None):
+        row = router.ledger.decision(call(router.route, brief="t", workdir=workdir)["decision_id"])
+        assert row["commit_sha"] is None and row["dirty"] is None
 
 
 def test_route_records_claude_availability_on_the_decision(router):
