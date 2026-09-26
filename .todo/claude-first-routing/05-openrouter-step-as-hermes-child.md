@@ -6,8 +6,11 @@ Blocked by: 01, 04
 ## What to build
 
 The `openrouter` rung runs the brief as a Hermes child on a cheaper non-Anthropic
-OpenRouter model, using the mechanism found in ticket 04, instead of `claude -p`
-pointed at OpenRouter. The Claude Code rung is unchanged.
+OpenRouter model, instead of `claude -p` pointed at OpenRouter. Ticket 04 found that
+`delegate_task` cannot choose a model per task, so `escalate()` spawns a headless
+one-shot run (`locoder -z <brief> -m <model> --provider custom:openrouter --in
+<workdir> --usage-file <file> -t coding`); see ticket 04's findings for exit codes,
+the usage file and the non-interactive model guard. The Claude Code rung is unchanged.
 
 Its attempts land in the ledger like the other rungs, with cost taken from
 OpenRouter's usage data, and are labelled through `route_outcome` as before. The

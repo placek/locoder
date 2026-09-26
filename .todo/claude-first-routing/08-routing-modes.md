@@ -18,8 +18,10 @@ The mode lasts until the session ends or is switched again; a new session is bac
 `auto`, even within the same Hermes process. Prefer keeping the mode in the routing
 plugin keyed by the Hermes session, so it survives context compression; only if
 plugin tools cannot see which session called them, fall back to the orchestrator
-passing the mode on every `route()` call. Find out which applies at the pinned
-Hermes revision and note it here.
+passing the mode on every `route()` call. At the pinned Hermes revision plugin
+handlers receive `session_id` (and `task_id`) as keyword arguments
+(`model_tools.py:826-838`, `tools/registry.py:893-910` in the Hermes tree), so the
+plugin-side option applies.
 
 In the forced modes the judge is still asked and its verdict recorded, but ignored.
 Each decision records the mode it was made in, and `route()`'s reason says a mode
