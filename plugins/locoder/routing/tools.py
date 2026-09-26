@@ -1,4 +1,4 @@
-"""The four agent-facing tools. Handlers return JSON strings, as Hermes tools do."""
+"""The agent-facing routing tools. Handlers return JSON strings, as Hermes tools do."""
 from __future__ import annotations
 
 import json
@@ -86,6 +86,20 @@ STATUS_SCHEMA = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+MODE_SCHEMA = {
+    "name": "routing_mode",
+    "description": (
+        "Set or show this session's routing mode. 'auto' (every session starts here) routes each "
+        "delegated task by the judge; 'claude' uses Claude Code only, handing the task back to the user "
+        "while it is locked out; 'local' uses the local coder only, handing a failed task straight back. "
+        "Call it only when the user asks to switch; omit mode to show the current one."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"mode": {"type": "string", "enum": list(policy.MODES)}},
+    },
+}
+
 
 def git_head(workdir: str) -> Optional[Tuple[str, bool]]:
     """(HEAD commit, has uncommitted changes) of *workdir*, or None when it is not a readable git checkout."""
@@ -109,8 +123,8 @@ def _error(message: str) -> str:
 
 
 class Router:
-    """Holds the ledger and judge for one Hermes process. Config is re-read per call, so an
-    edited routing.yaml applies on the next tool call, no restart."""
+    """Holds the ledger, the judge and each session's routing mode for one Hermes process.
+    Config is re-read per call, so an edited routing.yaml applies on the next tool call."""
 
     def __init__(self, clock: Callable[[], float] = time.time, judge_factory=None, ledger: Optional[Ledger] = None,
                  config_loader: Callable[[], dict] = settings.load):
@@ -119,6 +133,11 @@ class Router:
         self._judge_factory = judge_factory or (lambda cfg: Judge(
             cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"]))
         self._load = config_loader
+        # Hermes passes the calling session's id to every handler; a session never set here is "auto".
+        self._modes: Dict[str, str] = {}
+
+    def _mode(self, kwargs: Dict[str, Any]) -> str:
+        return self._modes.get(str(kwargs.get("session_id") or ""), "auto")
 
     @property
     def ledger(self) -> Ledger:
@@ -127,29 +146,33 @@ class Router:
         return self._ledger
 
     # -- route ----------------------------------------------------------------
-    def route(self, args: Dict[str, Any], **_: Any) -> str:
+    def route(self, args: Dict[str, Any], **kwargs: Any) -> str:
         brief = str(args.get("brief") or "").strip()
         if not brief:
             return _error("brief is required")
         cfg = self._load()
+        mode = self._mode(kwargs)
         verdict, judge_error = None, None
         try:
             verdict = self._judge_factory(cfg).judge(brief)
         except JudgeError as exc:
             judge_error = str(exc)
         claude = policy.claude_state(self.ledger, self.clock())
-        d = policy.decide(verdict, claude, cfg, judge_error)
+        d = policy.decide(verdict, claude, cfg, judge_error, mode=mode)
         vd, cd = verdict_dict(verdict), claude.as_dict()
         workdir = args.get("workdir") or None
         head = git_head(workdir) if workdir else None
         decision_id = self.ledger.add_decision(brief, workdir, d.rung, d.reason, vd, cd,
                                                commit_sha=head[0] if head else None,
-                                               dirty=head[1] if head else None)
-        return _json({"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
-                      "judge": vd, "claude": cd})
+                                               dirty=head[1] if head else None, mode=mode)
+        out = {"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
+               "mode": mode, "judge": vd, "claude": cd}
+        if d.rung == policy.HAND_BACK:
+            out["next"] = "Nothing may run this task now: tell the user why (the reason) and stop."
+        return _json(out)
 
     # -- escalate -------------------------------------------------------------
-    async def escalate(self, args: Dict[str, Any], **_: Any) -> str:
+    async def escalate(self, args: Dict[str, Any], **kwargs: Any) -> str:
         cfg = self._load()
         brief = str(args.get("brief") or "").strip()
         if not brief:
@@ -183,12 +206,15 @@ class Router:
         if result.limit_hit and rung == "claude":
             until = self._lock_out_claude(result.result, now, cfg)
             after = policy.decide(self._stored_verdict(decision_id), policy.ClaudeState(until), cfg,
-                                  judge_error="no verdict recorded for this task")
+                                  judge_error="no verdict recorded for this task", mode=self._mode(kwargs))
             out.update(claude_unavailable_until=policy.when(until, cfg), chain=after.chain,
                        chain_reason=after.reason,
                        next=("Claude Code hit a limit before finishing; nothing it did counts. Park any "
                              "changes, then continue with `chain` — the rest of this task's route now that "
-                             "Claude Code is locked out — instead of the chain route() returned."))
+                             "Claude Code is locked out — instead of the chain route() returned."
+                             if after.chain else
+                             "Claude Code hit a limit before finishing; nothing it did counts. Park any "
+                             "changes, tell the user when it resets (chain_reason), and stop."))
         return _json(out)
 
     def _lock_out_claude(self, error_text: str, now: float, cfg: dict) -> float:
@@ -221,12 +247,21 @@ class Router:
         return _json({"recorded": True, "decision_id": decision_id, "rung": rung,
                       "verified": bool(args.get("verified"))})
 
-    def status(self, args: Dict[str, Any], **_: Any) -> str:
+    def status(self, args: Dict[str, Any], **kwargs: Any) -> str:
         cfg = self._load()
         now = self.clock()
         week_start, _ = policy.week_bounds(now, cfg)
-        return _json({"claude": policy.claude_state(self.ledger, now).as_dict(),
+        return _json({"mode": self._mode(kwargs), "claude": policy.claude_state(self.ledger, now).as_dict(),
                       "this_week": self.ledger.stats(week_start)})
+
+    def set_mode(self, args: Dict[str, Any], **kwargs: Any) -> str:
+        mode = args.get("mode")
+        if mode is None:
+            return _json({"mode": self._mode(kwargs)})
+        if mode not in policy.MODES:
+            return _error(f"mode must be one of {list(policy.MODES)}")
+        self._modes[str(kwargs.get("session_id") or "")] = mode
+        return _json({"mode": mode})
 
 
 def register(ctx, router: Optional[Router] = None) -> Router:
@@ -241,4 +276,6 @@ def register(ctx, router: Optional[Router] = None) -> Router:
                       description="Label a delegated attempt as verified or not.", emoji="🏷️")
     ctx.register_tool(name="routing_status", toolset="coding", schema=STATUS_SCHEMA, handler=router.status,
                       description="Claude Code availability and per-rung results.", emoji="📊")
+    ctx.register_tool(name="routing_mode", toolset="coding", schema=MODE_SCHEMA, handler=router.set_mode,
+                      description="Set or show this session's routing mode.", emoji="🔀")
     return router

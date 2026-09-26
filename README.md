@@ -67,8 +67,8 @@ Hermes TUI — for all of it.
 | `systemd/locoder-llama.service.in` | the router as a user service | `~/.config/systemd/user/` |
 | `hermes.rev` | the Hermes commit in use | `~/.local/share/locoder/hermes` (git + uv venv) |
 | `profile/` | `config.yaml`, `SOUL.md`, `routing.yaml`, `env.example` | symlinked into the Hermes home |
-| `skills/` | the house method (`ship`, `tdd`, `verify`, `delegate`, …) | symlinked as the profile's skills root |
-| `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status` | symlinked plugins dir |
+| `skills/` | the house method (`ship`, `tdd`, `verify`, `delegate`, `routing-mode`, …) | symlinked as the profile's skills root |
+| `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
 | `plugins/web/defuddle/` | clean page extraction + `web_research` | symlinked plugins dir |
 | `sandbox/Dockerfile` | the container every agent `terminal()` call runs in | image `locoder-sandbox:local` |
 | `scripts/` | install, bump, check, report | — |
@@ -147,6 +147,20 @@ make test           the routing plugin's unit tests
 Update Hermes with `make bump`, not `hermes update`: the checkout is detached
 at the pinned commit, and `bump` is what re-runs the plugin checks against the
 new build before keeping it.
+
+## Routing modes
+
+`/routing-mode <auto|claude|local>` switches the current session; every session
+starts in `auto`, the judged routing above.
+
+- `claude` — Claude Code only, with its one retry. While a limit has it locked
+  out, tasks come straight back to you with the reset time.
+- `local` — the local coder only, no paid rung. A failed task comes straight
+  back to you.
+
+The judge is still asked in the forced modes and its verdict recorded, and each
+decision records its mode: forced-local runs on tasks the judge rated hard are
+calibration data `auto` never produces.
 
 ## Tuning the routing
 

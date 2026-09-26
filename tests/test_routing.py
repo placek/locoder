@@ -163,6 +163,22 @@ def test_thresholds_come_from_config():
     assert policy.decide(verdict(0.4, 2.0), LOCKED_OUT, c).rung == "openrouter"
 
 
+def test_local_mode_forces_the_coder_with_no_retry():
+    d = policy.decide(verdict(0.05, 3.0), AVAILABLE, cfg(), mode="local")
+    assert d.rung == "coder" and d.chain == ["coder"]
+
+
+def test_claude_mode_forces_claude_with_its_retry():
+    d = policy.decide(verdict(0.99, 0.0), AVAILABLE, cfg(), mode="claude")
+    assert d.rung == "claude" and d.chain == ["claude", "claude"]
+
+
+def test_claude_mode_while_locked_out_hands_back_with_the_reset():
+    d = policy.decide(verdict(0.5, 1.0), LOCKED_OUT, cfg(), mode="claude")
+    assert d.rung == policy.HAND_BACK and d.chain == []
+    assert "Mon 28 Sep 09:00" in d.reason
+
+
 def test_paid_rung_is_claude_until_locked_out():
     assert policy.paid_rung(AVAILABLE, cfg())[0] == "claude"
     assert policy.paid_rung(LOCKED_OUT, cfg())[0] == "openrouter"
@@ -316,8 +332,8 @@ def router(tmp_path, monkeypatch):
     return r
 
 
-def call(fn, **args):
-    out = fn(args)
+def call(fn, session=None, **args):
+    out = fn(args, **({"session_id": session} if session else {}))
     if asyncio.iscoroutine(out):
         out = asyncio.run(out)
     return json.loads(out)
@@ -435,7 +451,8 @@ def test_register_puts_all_tools_in_coding_toolset():
 
     register(Ctx(), router=object.__new__(Router))
     assert seen == [("route", "coding", False), ("escalate", "coding", True),
-                    ("route_outcome", "coding", False), ("routing_status", "coding", False)]
+                    ("route_outcome", "coding", False), ("routing_status", "coding", False),
+                    ("routing_mode", "coding", False)]
 
 
 def test_settings_merge_routing_yaml(tmp_path):
@@ -444,3 +461,36 @@ def test_settings_merge_routing_yaml(tmp_path):
     c = settings.load(f)
     assert c["policy"]["local_threshold"] == 0.8 and c["policy"]["fallback_threshold"] == 0.3
     assert c["openrouter"]["enabled"] is False
+
+
+# -- routing modes -----------------------------------------------------------
+
+def test_sessions_start_in_auto_and_switch_independently(router):
+    router.test["state"]["verdict"] = verdict(0.1, 2.9)
+    assert call(router.set_mode, session="s1")["mode"] == "auto"
+    assert call(router.set_mode, session="s1", mode="local")["mode"] == "local"
+    d = call(router.route, session="s1", brief="hard task")
+    assert d["rung"] == "coder" and d["chain"] == ["coder"] and d["mode"] == "local"
+    assert call(router.route, session="s2", brief="hard task")["rung"] == "claude"
+    assert call(router.status, session="s1")["mode"] == "local"
+    assert call(router.status, session="s2")["mode"] == "auto"
+
+
+def test_forced_decisions_still_record_the_verdict_and_the_mode(router):
+    call(router.set_mode, session="s1", mode="local")
+    d = call(router.route, session="s1", brief="task")
+    row = router.ledger.decision(d["decision_id"])
+    assert row["mode"] == "local" and json.loads(row["verdict"])["p_local"] == 0.9
+
+
+def test_claude_mode_hands_back_while_locked_out(router):
+    call(router.set_mode, session="s1", mode="claude")
+    router.test["mode"].write_text("limit")
+    r = call(router.escalate, session="s1", brief="task", workdir=router.test["proj"])
+    assert r["chain"] == [] and "tell the user" in r["next"]
+    d = call(router.route, session="s1", brief="task")
+    assert d["rung"] == "user" and d["chain"] == [] and "stop" in d["next"]
+
+
+def test_unknown_mode_is_refused(router):
+    assert "mode must be one of" in call(router.set_mode, session="s1", mode="cheap")["error"]

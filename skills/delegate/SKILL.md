@@ -33,6 +33,8 @@ No acceptance command means the task is not ready to delegate. Write the failing
 
 Call `route(brief, workdir)` once. Keep the `decision_id` and the `chain`. Read the `reason` — if it is obviously wrong (say, a one-line typo routed to a paid rung), note that in `route_outcome` later rather than overriding the chain.
 
+`route()` follows the session's routing mode (`/routing-mode`): in `claude` or `local` the chain is that one rung. A `rung` of `user` means nothing may run the task now (Claude Code-only mode while it is locked out): tell the user the `reason` and stop.
+
 ## 3. Run the current rung
 
 - **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time; the coder serves a single slot.

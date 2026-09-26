@@ -14,6 +14,10 @@ from zoneinfo import ZoneInfo
 from .judge import Verdict
 
 RUNGS = ("coder", "claude", "openrouter")
+# A session's routing mode: "auto" routes by the judge; "claude" and "local" force one rung.
+MODES = ("auto", "claude", "local")
+# The decision's rung when nothing may run: the task goes back to the user.
+HAND_BACK = "user"
 
 
 def window_bounds(now: float, reset_weekday: int, reset_hour: int, tz: str) -> Tuple[float, float]:
@@ -55,7 +59,7 @@ def claude_state(ledger, now: float) -> ClaudeState:
 
 @dataclass
 class Decision:
-    rung: str
+    rung: str             # the first rung to run, or HAND_BACK when none may
     reason: str
     chain: List[str]      # rungs in order; a rung listed twice is its one retry. After the last: the user.
 
@@ -65,12 +69,20 @@ def when(ts: float, cfg: dict) -> str:
 
 
 def decide(verdict: Optional[Verdict], claude: ClaudeState, cfg: dict,
-           judge_error: Optional[str] = None) -> Decision:
+           judge_error: Optional[str] = None, mode: str = "auto") -> Decision:
     pol = cfg["policy"]
     if verdict is None:
         seen = f"judge unavailable ({judge_error})"
     else:
         seen = f"judge: P(local finishes)={verdict.p_local:.2f}, difficulty≈{verdict.expected_difficulty:.1f}"
+
+    if mode == "local":
+        return Decision("coder", f"routing mode local forces the coder, with no retry ({seen})", ["coder"])
+    if mode == "claude":
+        if claude.available:
+            return Decision("claude", f"routing mode claude forces Claude Code ({seen})", ["claude", "claude"])
+        return Decision(HAND_BACK, f"routing mode claude, and Claude Code is unavailable until "
+                                   f"{when(claude.unavailable_until, cfg)}: back to the user", [])
 
     if claude.available:
         near_certain = (verdict is not None

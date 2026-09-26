@@ -18,7 +18,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status"},
+REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status", "routing_mode"},
                     "web/defuddle": {"web_research"}}
 PRESETS = {"orchestrator", "coder", "judge"}
 

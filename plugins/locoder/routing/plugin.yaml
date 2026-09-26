@@ -9,3 +9,4 @@ provides_tools:
   - escalate
   - route_outcome
   - routing_status
+  - routing_mode

@@ -1,6 +1,6 @@
 # 08: Per-session routing modes — auto, claude, local
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01, 02
 
 ## What to build
@@ -33,10 +33,11 @@ loading `writing-for-agents`. The `delegate` skill explains the modes.
 
 ## Acceptance criteria
 
-- [ ] A new session routes in `auto`; after switching to `local`, a task the judge rates hard still routes to the coder with chain coder → user.
-- [ ] In `claude` mode with Claude Code available, the chain is claude → claude; with Claude Code out, `route()` returns no rung to run and the reset time.
-- [ ] In `claude` mode, a mid-run limit hit returns the reset time and no remaining chain.
-- [ ] A switch in one session does not change the mode of another session, and a new session starts in `auto`.
-- [ ] Forced-mode decisions still store the judge's verdict and record the mode.
-- [ ] `routing_status` shows the current mode.
-- [ ] `make test` and `make check-offline` pass; the new skill appears in `skills list`.
+- [x] A new session routes in `auto`; after switching to `local`, a task the judge rates hard still routes to the coder with chain coder → user.
+- [x] In `claude` mode with Claude Code available, the chain is claude → claude; with Claude Code out, `route()` returns no rung to run and the reset time.
+- [x] In `claude` mode, a mid-run limit hit returns the reset time and no remaining chain.
+- [x] A switch in one session does not change the mode of another session, and a new session starts in `auto`.
+- [x] Forced-mode decisions still store the judge's verdict and record the mode.
+- [x] `routing_status` shows the current mode.
+- [ ] `make test` and `make check-offline` pass; the new skill appears in `skills list`. (`make test` passes;
+  `make check-offline` and `skills list` need the pinned Hermes: run them on alpha.)

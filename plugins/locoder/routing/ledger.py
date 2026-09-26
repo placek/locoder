@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     verdict TEXT,            -- JSON from judge.verdict_dict, NULL when the judge was down
     claude TEXT,             -- JSON: Claude Code's availability when the decision was made
     commit_sha TEXT,         -- workdir HEAD at route() time; with the brief, makes the task replayable
-    dirty INTEGER            -- 1 if the workdir had uncommitted changes then
+    dirty INTEGER,           -- 1 if the workdir had uncommitted changes then
+    mode TEXT                -- the session's routing mode: auto, claude or local
 );
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +62,7 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
-        self._add_missing_columns("decisions", {"claude": "TEXT", "commit_sha": "TEXT", "dirty": "INTEGER"})
+        self._add_missing_columns("decisions", {"claude": "TEXT", "commit_sha": "TEXT", "dirty": "INTEGER", "mode": "TEXT"})
         self._add_missing_columns("limit_hits", {"reset_source": "TEXT", "raw": "TEXT"})
 
     def _add_missing_columns(self, table: str, columns: Dict[str, str]) -> None:
@@ -75,15 +76,16 @@ class Ledger:
     # -- writes -------------------------------------------------------------
     def add_decision(self, brief: str, workdir: Optional[str], rung: str, reason: str,
                      verdict: Optional[dict], claude: Optional[dict],
-                     commit_sha: Optional[str] = None, dirty: Optional[bool] = None) -> str:
+                     commit_sha: Optional[str] = None, dirty: Optional[bool] = None,
+                     mode: str = "auto") -> str:
         decision_id = uuid.uuid4().hex[:12]
         with self.db:
             self.db.execute(
-                "INSERT INTO decisions (id, ts, brief, workdir, rung, reason, verdict, claude, commit_sha, dirty)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO decisions (id, ts, brief, workdir, rung, reason, verdict, claude, commit_sha, dirty, mode)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (decision_id, time.time(), brief, workdir, rung, reason,
                  json.dumps(verdict) if verdict else None, json.dumps(claude) if claude else None,
-                 commit_sha, _tri(dirty)),
+                 commit_sha, _tri(dirty), mode),
             )
         return decision_id
 
