@@ -1,6 +1,6 @@
 # 08: Per-session routing modes — auto, claude, local
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01, 02
 
 ## What to build
@@ -18,8 +18,10 @@ The mode lasts until the session ends or is switched again; a new session is bac
 `auto`, even within the same Hermes process. Prefer keeping the mode in the routing
 plugin keyed by the Hermes session, so it survives context compression; only if
 plugin tools cannot see which session called them, fall back to the orchestrator
-passing the mode on every `route()` call. Find out which applies at the pinned
-Hermes revision and note it here.
+passing the mode on every `route()` call. At the pinned Hermes revision plugin
+handlers receive `session_id` (and `task_id`) as keyword arguments
+(`model_tools.py:826-838`, `tools/registry.py:893-910` in the Hermes tree), so the
+plugin-side option applies.
 
 In the forced modes the judge is still asked and its verdict recorded, but ignored.
 Each decision records the mode it was made in, and `route()`'s reason says a mode
@@ -31,10 +33,16 @@ loading `writing-for-agents`. The `delegate` skill explains the modes.
 
 ## Acceptance criteria
 
-- [ ] A new session routes in `auto`; after switching to `local`, a task the judge rates hard still routes to the coder with chain coder → user.
-- [ ] In `claude` mode with Claude Code available, the chain is claude → claude; with Claude Code out, `route()` returns no rung to run and the reset time.
-- [ ] In `claude` mode, a mid-run limit hit returns the reset time and no remaining chain.
-- [ ] A switch in one session does not change the mode of another session, and a new session starts in `auto`.
-- [ ] Forced-mode decisions still store the judge's verdict and record the mode.
-- [ ] `routing_status` shows the current mode.
-- [ ] `make test` and `make check-offline` pass; the new skill appears in `skills list`.
+- [x] A new session routes in `auto`; after switching to `local`, a task the judge rates hard still routes to the coder with chain coder → user.
+- [x] In `claude` mode with Claude Code available, the chain is claude → claude; with Claude Code out, `route()` returns no rung to run and the reset time.
+- [x] In `claude` mode, a mid-run limit hit returns the reset time and no remaining chain.
+- [x] A switch in one session does not change the mode of another session, and a new session starts in `auto`.
+- [x] Forced-mode decisions still store the judge's verdict and record the mode.
+- [x] `routing_status` shows the current mode.
+- [ ] `make test` and `make check-offline` pass; the new skill appears in `skills list`. (`make test` passes;
+  `skills list` shows `routing-mode` enabled; see below for `make check-offline`.)
+  Verified in a cloud container with the pinned Hermes installed: the profile and plugin
+  checks of `make check-offline` pass (all five routing tools loaded and in the `coding`
+  toolset); its two failures there, defuddle and the sandbox image, are that container's.
+  Dispatched through Hermes' own tool registry, `routing_mode` set in session s1 showed
+  `local` there and `auto` in session s2: `session_id` reaches the handlers as expected.

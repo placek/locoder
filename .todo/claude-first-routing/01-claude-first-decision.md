@@ -1,6 +1,6 @@
 # 01: Claude-first routing decision
 
-Status: ready-for-agent
+Status: done
 Blocked by: none
 
 ## What to build
@@ -27,10 +27,14 @@ removed).
 
 ## Acceptance criteria
 
-- [ ] With Claude Code available, P(local)=0.9 and difficulty 0.3 route to the coder with chain coder → claude → claude.
-- [ ] With Claude Code available, P(local)=0.7 (below 0.85) routes to claude with chain claude → claude.
-- [ ] With Claude Code out, P(local)=0.4 routes to the coder with chain coder → openrouter; P(local)=0.2 routes to openrouter alone.
-- [ ] With the judge unreachable, the task starts on claude while it is available.
-- [ ] No code, config key, tool output or doc still refers to pace, allowance or a weekly budget.
-- [ ] Thresholds (0.85, 0.5, 0.3) are `routing.yaml` settings, applied on the next tool call.
-- [ ] `make test` and `make check-offline` pass.
+- [x] With Claude Code available, P(local)=0.9 and difficulty 0.3 route to the coder with chain coder → claude → claude.
+- [x] With Claude Code available, P(local)=0.7 (below 0.85) routes to claude with chain claude → claude.
+- [x] With Claude Code out, P(local)=0.4 routes to the coder with chain coder → openrouter; P(local)=0.2 routes to openrouter alone.
+- [x] With the judge unreachable, the task starts on claude while it is available.
+- [x] No code, config key, tool output or doc still refers to pace, allowance or a weekly budget.
+- [x] Thresholds (0.85, 0.5, 0.3) are `routing.yaml` settings, applied on the next tool call.
+- [ ] `make test` and `make check-offline` pass. (`make test` passes; `make check-offline` needs the
+  pinned Hermes install and has not been run yet: run it on alpha before merging.)
+  Verified in a cloud container with the pinned Hermes installed: the profile and plugin
+  checks of `make check-offline` pass (all five routing tools loaded and in the `coding`
+  toolset); its two failures there, defuddle and the sandbox image, are that container's.

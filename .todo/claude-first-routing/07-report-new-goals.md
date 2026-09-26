@@ -1,6 +1,6 @@
 # 07: Report against the new goals
 
-Status: ready-for-agent
+Status: done
 Blocked by: 02, 05
 
 ## What to build
@@ -20,6 +20,6 @@ The pacer's sections (limit-hit spend, learned budget) go.
 
 ## Acceptance criteria
 
-- [ ] On a ledger seeded with lockouts, coder attempts both with and without Claude Code available, and OpenRouter attempts with cost, each figure above prints correctly.
-- [ ] Fallback and near-certain coder attempts are counted separately.
-- [ ] No output refers to pace or a weekly budget.
+- [x] On a ledger seeded with lockouts, coder attempts both with and without Claude Code available, and OpenRouter attempts with cost, each figure above prints correctly.
+- [x] Fallback and near-certain coder attempts are counted separately.
+- [x] No output refers to pace or a weekly budget.

@@ -3,53 +3,63 @@
 A local coding agent in one repository: the llama.cpp router that serves the
 models, a pinned [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 install, the `locoder` profile (config, soul, skills, plugins), and the routing
-that decides when a task is worth a paid model.
+that decides where each delegated task runs.
 
-Priorities it is built around, in order: **time** (don't wait on a local model
-that was never going to finish), **the weekly Claude Code limit** (make it last
-until the reset instead of running out two days early), then **money**. One
-interface — the Hermes TUI — for all of it.
+**Claude Code is the default worker**, spent freely. Local models take the work
+they are near-certain to finish and cover for Claude Code while a limit has it
+locked out; OpenRouter is the last resort. Success is Claude Code lasting until
+its weekly reset without the verified pass rate dropping. One interface — the
+Hermes TUI — for all of it.
 
 ## How work flows
 
 ```
- you ──► orchestrator (Laguna-S 2.1, local) ── plans, keeps the gates, verifies
-            │
+ you ──► orchestrator (Laguna-S 2.1, local) ── plans, keeps the gates, verifies,
+            │                                    does mechanical work itself
             │  anything bigger than a surgical edit: /delegate
             ▼
          route(brief) ──► judge preset (small CPU model): difficulty 0-3, P(coder finishes)
-            │             pacer: Claude Code spend vs. time left in the week
+            │             is Claude Code locked out by a limit?
             ▼
-   chain, e.g.  coder ──fail──► claude ──fail──► openrouter
-                  │                │                 │
-          delegate_task      escalate():        escalate():
-          (Qwen3.6-35B-A3B,  claude -p on the   the same claude -p,
-           local, free)      Max plan           pointed at OpenRouter
+   Claude Code available                       Claude Code locked out
+     near-certain:  coder → claude → claude      P ≥ 0.3:  coder → openrouter
+     otherwise:     claude → claude              P < 0.3:  openrouter
+            │                                   (after the last rung: back to you)
+            ▼
+   coder: delegate_task          claude: escalate()        openrouter: escalate()
+   (Qwen3.6-35B-A3B,             claude -p on the          locoder -z: this Hermes
+    local, free)                 Max plan                  profile, one-shot, on a
+                                                           cheap OpenRouter model
             │
             ▼
    orchestrator runs the acceptance check itself ──► route_outcome(verified) ──► ledger
 ```
 
-- **The judge picks where a task starts, not where it ends.** A wrong call is
-  cheap: if it starts on the coder and fails, the cascade escalates anyway.
-  So a zero-shot judge is good enough on day one, and the ledger shows when
-  its thresholds need moving (`make report`).
+- **Claude Code first, local when it is a sure thing.** The judge sends a
+  task to the coder up front only when it is near-certain the coder finishes
+  it; everything else starts on Claude Code, which gets one retry with the
+  failing check output before the task comes back to you. A wrong "coder" is
+  cheap: the chain moves on to Claude Code. The ledger shows when the
+  thresholds need moving (`make report`).
 - **The judge reads probabilities, not prose.** It asks one-token questions
   with `max_tokens=1` and `top_logprobs`, and reads the probability of each
   allowed answer (the SemIf trick). It runs as its own CPU-only preset because
   the orchestrator and coder each have a single KV slot: one judge query there
   would evict a 64k-token conversation.
-- **The pacer rations Max.** Spend may run 10% ahead of a straight line across
-  the week. Ahead of that, Claude Code is kept for hard tasks and the rest goes
-  to OpenRouter. When the limit hits mid-run, `escalate()` records it, retries
-  that task on OpenRouter, and routes around Claude Code until the reset. Each
-  limit hit also records what had been spent, and the median of those becomes
-  the week's budget — the pacer learns the size of your limit.
-- **Both paid rungs are the same CLI.** OpenRouter serves an
-  Anthropic-compatible endpoint, so the OpenRouter rung is `claude -p` with
-  `ANTHROPIC_BASE_URL` pointed there (and its own `CLAUDE_CONFIG_DIR`, so the
-  cached Max login never collides with the gateway key). Same brief, same JSON
-  result, same usage accounting. Blackout days use the same model family.
+- **No rationing; limits are handled when they hit.** Claude Code is used
+  until a limit — the short session one or the weekly one — stops it. When
+  one hits mid-run, `escalate()` reads the reset time from the error, locks
+  Claude Code out until then (an hour if the error names no time), and hands
+  the orchestrator the rest of that task's chain: the coder first when the
+  judge gives it a fair chance, OpenRouter otherwise. After the reset, Claude
+  Code is the default again.
+- **OpenRouter runs inside Hermes.** The OpenRouter rung is a one-shot run of
+  this same profile (`locoder -z <brief> -m <model> --provider
+  custom:openrouter --in <workdir> -t coding`) on a cheaper model: Hermes stays
+  the harness, its commands go to the sandbox, and `--usage-file` reports the
+  cost. `delegate_task` cannot pick a model per task, which is why it is a
+  separate process rather than a child. Without a TTY, Hermes refuses a model
+  priced over $20/M input or $100/M output, so pick a cheap one.
 
 ## Layout
 
@@ -60,8 +70,8 @@ interface — the Hermes TUI — for all of it.
 | `systemd/locoder-llama.service.in` | the router as a user service | `~/.config/systemd/user/` |
 | `hermes.rev` | the Hermes commit in use | `~/.local/share/locoder/hermes` (git + uv venv) |
 | `profile/` | `config.yaml`, `SOUL.md`, `routing.yaml`, `env.example` | symlinked into the Hermes home |
-| `skills/` | the house method (`ship`, `tdd`, `verify`, `delegate`, …) | symlinked as the profile's skills root |
-| `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status` | symlinked plugins dir |
+| `skills/` | the house method (`ship`, `tdd`, `verify`, `delegate`, `routing-mode`, …) | symlinked as the profile's skills root |
+| `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
 | `plugins/web/defuddle/` | clean page extraction + `web_research` | symlinked plugins dir |
 | `sandbox/Dockerfile` | the container every agent `terminal()` call runs in | image `locoder-sandbox:local` |
 | `scripts/` | install, bump, check, report | — |
@@ -102,7 +112,7 @@ make tui            # or just: locoder
 ```
 
 Set `claude.week` in `profile/routing.yaml` to when your Max week resets
-(`/usage` in Claude Code shows it) — "ahead of pace" is measured from there.
+(`/usage` in Claude Code shows it) — weekly results are grouped by it.
 
 ### Moving over from home.nix
 
@@ -133,7 +143,8 @@ make install        after editing presets.ini: restarts the router if running
 make bump           Hermes to origin/main; kept only if `make check` passes, else rolled back
 make bump REV=<sha> a specific commit; commit hermes.rev afterwards
 make pin-llama      re-resolve the llama.cpp image tag to a new digest; commit llama/image.lock
-make report         judge calibration and per-rung results from the ledger
+make report         days without Claude Code, pass rates, coder as fallback, OpenRouter spend, judge calibration
+make bakeoff MODELS=a,b   replay recent delegated tasks on candidate OpenRouter models; set the winner as openrouter.model
 make test           the routing plugin's unit tests
 ```
 
@@ -141,27 +152,43 @@ Update Hermes with `make bump`, not `hermes update`: the checkout is detached
 at the pinned commit, and `bump` is what re-runs the plugin checks against the
 new build before keeping it.
 
+## Routing modes
+
+`/routing-mode <auto|claude|local>` switches the current session; every session
+starts in `auto`, the judged routing above.
+
+- `claude` — Claude Code only, with its one retry. While a limit has it locked
+  out, tasks come straight back to you with the reset time.
+- `local` — the local coder only, no paid rung. A failed task comes straight
+  back to you.
+
+The judge is still asked in the forced modes and its verdict recorded, and each
+decision records its mode: forced-local runs on tasks the judge rated hard are
+calibration data `auto` never produces.
+
 ## Tuning the routing
 
 Everything is in `profile/routing.yaml` and applies on the next tool call:
 
-- `policy.local_threshold` / `local_max_difficulty` — how optimistic the judge
-  must be before a task starts on the coder. Lower them if the coder keeps
-  passing tasks it was not given; raise them if it keeps failing ones it was.
+- `policy.local_threshold` / `local_max_difficulty` — how near-certain the
+  judge must be before a task starts on the coder instead of Claude Code
+  (0.85 / 0.5). Loosen them to offload more if Claude Code keeps running out
+  before the reset; tighten them if the coder keeps failing what it is given.
   `make report` buckets the coder's pass rate by the judge's P(local).
-- `policy.hard_difficulty` — the bar for spending Claude Code when ahead of pace.
-- `policy.pace_slack` — how far ahead of schedule spending may run.
-- `claude.weekly_budget` — only the starting guess; limit hits replace it.
-- `openrouter.model` — what the blackout days run on.
+- `policy.fallback_threshold` — while Claude Code is locked out, the P(local)
+  at which the coder is tried before OpenRouter (0.3).
+- `openrouter.model` — what runs when Claude Code is out and the coder is not.
 
 ## Known limits
 
-- The pacer measures Claude Code's reported `total_cost_usd`, not the
-  subscription's own meter, which it cannot read. The unit only has to be
-  consistent: the budget is learned from what had been spent at each limit hit.
-- Limit hits are detected from Claude Code's error text. If a future CLI words
-  it differently, the run fails as an ordinary error instead of falling back;
-  `LIMIT_PATTERN` in `plugins/locoder/routing/backends.py` is the one place to fix.
+- Claude Code's usage is not visible in advance: no documented command reports
+  it without a session, so limits are only learned when a run fails on one.
+- Limit hits and their reset times are read from Claude Code's error text,
+  whose `-p` wording is undocumented. If a future CLI words it differently,
+  the run fails as an ordinary error instead of falling back, or the reset is
+  unreadable and the lockout is `claude.limit_fallback_s`. Every hit keeps its
+  raw text in the ledger's `limit_hits.raw`; `LIMIT_PATTERN` and
+  `reset_time()` in `plugins/locoder/routing/backends.py` are the place to fix.
 - `escalate()` runs Claude Code on the host (it needs your Max login), with the
   tool allow-list in `routing.yaml` and workdirs restricted to
   `claude.workdir_roots`. The local agent's own commands run in the sandbox.

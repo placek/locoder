@@ -10,17 +10,16 @@ llama:
   timeout_s: 30
 
 policy:
-  # Start on the local coder when P(coder finishes) >= local_threshold AND the
-  # expected difficulty (0 trivial .. 3 heavy) is <= local_max_difficulty.
-  # A wrong "coder" costs minutes (the cascade escalates); a wrong "paid" costs
+  # Claude Code is the default. The local coder goes first only when the judge
+  # is near-certain: P(coder finishes) >= local_threshold AND expected
+  # difficulty (0 trivial .. 3 heavy) <= local_max_difficulty. A wrong "coder"
+  # costs minutes (the chain moves on to Claude Code); a wrong "claude" costs
   # quota. Tune these from `make report` once the ledger has a few weeks in it.
-  local_threshold: 0.6
-  local_max_difficulty: 1.5
-  # When ahead of the weekly pace, only tasks at or above this still get Claude Code.
-  hard_difficulty: 2.5
-  # How far ahead of a straight line across the week spending may run.
-  pace_slack: 0.10
-  fail_open_rung: coder
+  local_threshold: 0.85
+  local_max_difficulty: 0.5
+  # While a limit has Claude Code locked out, the coder is tried before
+  # OpenRouter when P(coder finishes) >= fallback_threshold.
+  fallback_threshold: 0.3
 
 claude:
   bin: claude
@@ -29,21 +28,26 @@ claude:
   allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
   workdir_roots: [/srv/data/projects]
   # When your Max weekly window resets (0 = Monday .. 6 = Sunday, local time).
-  # Check it in Claude Code with /usage and set it here: the pacer's whole idea
-  # of "ahead" or "behind" hangs on this.
+  # Check it in Claude Code with /usage. Results are grouped by this week.
   week:
     reset_weekday: 0
     reset_hour: 9
     timezone: Europe/Warsaw
-  # First guess at the week's size in Claude Code cost units (total_cost_usd).
-  # Replaced automatically by the median spend at your last limit hits.
-  weekly_budget: 300
+  # A limit error is read for its reset time, and Claude Code is skipped until
+  # then. When the error names no readable time, it is skipped this long; the
+  # next task after that tries again and re-locks if the limit still holds.
+  limit_fallback_s: 3600
   result_chars: 8000
 
+# The last resort: a one-shot run of this Hermes profile on an OpenRouter model,
+# via the `openrouter` custom provider in config.yaml (OPENROUTER_API_KEY in .env).
 openrouter:
   enabled: true
-  api_key_env: OPENROUTER_API_KEY
-  base_url: https://openrouter.ai/api
-  # Same model family as Max, so a blackout day behaves like any other day.
-  model: anthropic/claude-fable-5.1
-  config_dir: ~/.local/state/locoder/claude-openrouter
+  hermes_bin: locoder
+  provider: custom:openrouter
+  # A placeholder until the bake-off picks one. Use a concrete model id: Hermes
+  # prices runs from OpenRouter's model list, and an unlisted id costs "unknown".
+  # Without a TTY, Hermes refuses models over $20/M input or $100/M output.
+  model: deepseek/deepseek-v4.1-flash
+  toolsets: coding
+  timeout_s: 1800

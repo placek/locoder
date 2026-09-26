@@ -5,8 +5,9 @@
 # `plugins list`, `skills list`) is plain hermes, just aimed at this profile.
 export HERMES_HOME="@HERMES_HOME@"
 export HERMES_DEFUDDLE_BIN="@PREFIX@/tools/defuddle/node_modules/.bin/defuddle"
-# escalate() hands OPENROUTER_API_KEY to Claude Code as a process env var, so
-# the profile's .env must be in the environment, not only read by Hermes.
+# escalate() starts child processes (claude, a one-shot locoder run) that read
+# keys such as OPENROUTER_API_KEY from their environment, so the profile's .env
+# must be in the environment, not only read by Hermes.
 if [ -f "$HERMES_HOME/.env" ]; then
     set -a
     # shellcheck disable=SC1091

@@ -18,7 +18,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status"},
+REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status", "routing_mode"},
                     "web/defuddle": {"web_research"}}
 PRESETS = {"orchestrator", "coder", "judge"}
 
@@ -114,11 +114,15 @@ def check_tools() -> None:
         out = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=30)
         ok(f"claude CLI: {out.stdout.strip() or claude}")
     else:
-        fail("claude CLI not on PATH: escalate() cannot run the paid rungs")
+        fail("claude CLI not on PATH: escalate() cannot run the Claude Code rung")
     if os.environ.get("OPENROUTER_API_KEY"):
         ok("OPENROUTER_API_KEY present")
     else:
-        warn("OPENROUTER_API_KEY not set: the openrouter rung will refuse to run")
+        warn("OPENROUTER_API_KEY not set: the openrouter rung's Hermes run cannot reach OpenRouter")
+    if shutil.which("locoder"):
+        ok("locoder on PATH (the openrouter rung runs it one-shot)")
+    else:
+        warn("locoder not on PATH: the openrouter rung cannot start (set openrouter.hermes_bin)")
     defuddle = os.environ.get("HERMES_DEFUDDLE_BIN", "")
     if defuddle and os.access(defuddle, os.X_OK):
         ok(f"defuddle: {defuddle}")

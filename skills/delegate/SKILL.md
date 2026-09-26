@@ -5,15 +5,15 @@ description: Route, run, verify, record and escalate any implementation work big
 
 # Delegate
 
-You keep the plan and the gates; someone else types the code. Where it goes is not a feeling. `route()` asks a local judge model how hard the brief is and whether the local coder can finish it, checks the weekly Claude Code pace, and returns a starting rung plus a fallback chain. You follow the chain. Every attempt gets verified by you and recorded.
+You keep the plan and the gates; someone else types the code. Where it goes is not a feeling. `route()` asks a local judge model how hard the brief is and whether the local coder can finish it, checks whether a limit has Claude Code locked out, and returns a starting rung plus a chain. You follow the chain. Every attempt gets verified by you and recorded.
 
-The rungs, cheapest first:
+Claude Code is the default. The local coder goes first only when the judge is near-certain it will finish, or when Claude Code is locked out and the coder has a fair chance. OpenRouter is the last resort.
 
 | rung | how | cost |
 |---|---|---|
 | `coder` | `delegate_task` (the delegation default is the local `coder` model) | time only |
-| `claude` | `escalate(backend="claude")` — Claude Code on the Max plan | weekly Max limit |
-| `openrouter` | `escalate(backend="openrouter")` — same CLI, same model family, pay-per-token | money |
+| `claude` | `escalate(backend="claude")` — Claude Code on the Max plan | Max limits |
+| `openrouter` | `escalate(backend="openrouter")` — a one-shot run of this Hermes profile on a cheaper OpenRouter model | money |
 
 ## 1. Write the brief
 
@@ -33,10 +33,12 @@ No acceptance command means the task is not ready to delegate. Write the failing
 
 Call `route(brief, workdir)` once. Keep the `decision_id` and the `chain`. Read the `reason` — if it is obviously wrong (say, a one-line typo routed to a paid rung), note that in `route_outcome` later rather than overriding the chain.
 
+`route()` follows the session's routing mode (`/routing-mode`): in `claude` or `local` the chain is that one rung. A `rung` of `user` means nothing may run the task now (Claude Code-only mode while it is locked out): tell the user the `reason` and stop.
+
 ## 3. Run the current rung
 
 - **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time; the coder serves a single slot.
-- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if the weekly limit hits mid-run, it switches to OpenRouter by itself and says so in `runs`.
+- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, the result carries `claude_unavailable_until` and a new `chain`: the rest of this task's route with Claude Code locked out. Park whatever the run left behind (step 5.1), record nothing for it, and continue with that `chain` instead of the one `route()` returned.
 
 ## 4. Verify and record — every attempt
 
@@ -49,14 +51,16 @@ Skipping the record is the one mistake here that compounds: these labels are wha
 ## 5. On failure, move down the chain
 
 1. Park the failed attempt instead of building on it: `git stash push -m "delegate <decision_id> <rung>"`. Nothing is lost, and the next rung starts from the same clean base.
-2. Append one line to the brief's Context: what the previous rung tried and how the check failed. Nothing more — not its reasoning, not its diff.
+2. Append to the brief's Context what the previous rung tried and the failing check output, trimmed to the lines that show the failure. Nothing more — not its reasoning, not its diff.
 3. Run the next rung in `chain`. Same verify-and-record step.
 
-If the whole chain fails, stop. Report to the user what each rung did, the failing output, and the stash names. Do not loop, do not hand-patch the result into passing.
+A rung listed twice (`claude, claude`) is one retry on that rung: the second attempt differs only by the failure in its Context.
+
+After the last rung in the chain, stop. Report to the user what each rung did, the failing output, and the stash names. Do not loop, do not hand-patch the result into passing.
 
 ## Rules
 
-- Never run `claude` from the terminal. `escalate()` is the only path: it paces the weekly limit, falls back on OpenRouter, and writes the ledger.
+- Never run `claude` from the terminal. `escalate()` is the only path: it records limit hits so routing avoids Claude Code while it is locked out, hands back the rest of the chain when one hits, and writes the ledger.
 - Never pick a rung yourself because a task "feels big". If you disagree with `route()`, say so in `route_outcome` notes; the thresholds are tuned from the ledger, and an override leaves no trace there.
 - Never delegate `/ship`, an unscoped "make it work", or the decision that something is done.
-- `routing_status` shows the week's pace and per-rung results when the user asks how the budget stands.
+- `routing_status` shows whether Claude Code is available (or locked out, and until when) and this week's per-rung results, when the user asks how things stand.

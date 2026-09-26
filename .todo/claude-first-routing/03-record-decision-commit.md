@@ -1,6 +1,6 @@
 # 03: Record the commit each routed task starts from
 
-Status: ready-for-agent
+Status: done
 Blocked by: none
 
 ## What to build
@@ -16,7 +16,7 @@ routing carries on as before.
 
 ## Acceptance criteria
 
-- [ ] `route()` with a workdir inside a git checkout stores its HEAD commit and a dirty flag on the decision.
-- [ ] `route()` with no workdir, or a non-git one, still decides and stores no commit.
-- [ ] Existing ledgers gain the new columns without losing data.
-- [ ] `make test` passes.
+- [x] `route()` with a workdir inside a git checkout stores its HEAD commit and a dirty flag on the decision.
+- [x] `route()` with no workdir, or a non-git one, still decides and stores no commit.
+- [x] Existing ledgers gain the new columns without losing data.
+- [x] `make test` passes.

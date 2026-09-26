@@ -1,67 +1,153 @@
 #!/usr/bin/env python3
-"""`make report`: what the routing ledger says so far.
+"""`make report`: what the routing ledger says about the goals it is judged on.
 
-The question it answers: are the judge's thresholds in routing.yaml right? A coder attempt
-that passed /verify is evidence the task was local-sized; one that failed is evidence it was
-not. Bucketing those by the judge's P(local) shows whether the judge separates them at all,
-and where local_threshold should sit.
+Claude Code should last until its weekly reset (days without it is the signal that too little
+is offloaded) without the verified pass rate dropping. Below that: how the coder does when it
+is chosen as a sure thing versus as a fallback, what OpenRouter cost, and whether the judge's
+P(local) separates tasks the coder finishes from ones it does not.
 """
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
+from typing import List, Tuple
 
-home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-db_path = home / "routing" / "ledger.db"
-if not db_path.exists():
-    sys.exit(f"no ledger yet at {db_path}: nothing has been routed")
-db = sqlite3.connect(str(db_path))
-db.row_factory = sqlite3.Row
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "locoder"))
+from routing import policy, settings  # noqa: E402
+from routing.ledger import Ledger  # noqa: E402
 
-print(f"ledger: {db_path}\n")
+WEEKS = 4
+DAY = 86400.0
 
-print("rungs (all time)")
-for r in db.execute("SELECT rung, COUNT(*) n, SUM(verified=1) v, SUM(verified=0) f, SUM(verified IS NULL) u, "
-                    "ROUND(SUM(cost),2) cost, ROUND(AVG(duration_s)) dur FROM attempts GROUP BY rung ORDER BY rung"):
-    print(f"  {r['rung']:<11} attempts {r['n']:>4}   verified {r['v'] or 0:>4}   failed {r['f'] or 0:>4}"
-          f"   unlabelled {r['u'] or 0:>4}   cost {r['cost'] or 0:>8}   avg {r['dur'] or 0:>5.0f}s")
 
-print("\nstarting rung chosen by route()")
-for r in db.execute("SELECT rung, COUNT(*) n FROM decisions GROUP BY rung"):
-    print(f"  {r['rung']:<11} {r['n']}")
+def _weeks(now: float, cfg: dict) -> List[Tuple[float, float]]:
+    start, end = policy.week_bounds(now, cfg)
+    out = [(start, end)]
+    for _ in range(WEEKS - 1):
+        start, end = policy.week_bounds(out[-1][0] - 1, cfg)
+        out.append((start, end))
+    return out
 
-# Judge calibration: coder outcomes bucketed by the judge's P(local).
-rows = db.execute("""
-    SELECT d.verdict, a.verified FROM decisions d
-    JOIN attempts a ON a.decision_id = d.id AND a.rung = 'coder'
-    WHERE d.verdict IS NOT NULL AND a.verified IS NOT NULL""").fetchall()
-print(f"\njudge calibration on {len(rows)} labelled coder attempts")
-if not rows:
-    print("  none yet. The coder only runs when the judge is optimistic, so early on this")
-    print("  fills slowly; failures on paid rungs do not label the judge's P(local).")
-else:
-    buckets: dict[int, list[int]] = {}
+
+def _lockouts(db: sqlite3.Connection) -> List[Tuple[float, float]]:
+    """Limit-hit intervals merged, so overlapping hits are not counted twice."""
+    merged: List[List[float]] = []
+    for ts, until in db.execute("SELECT ts, until FROM limit_hits WHERE until > ts ORDER BY ts"):
+        if merged and ts <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], until)
+        else:
+            merged.append([ts, until])
+    return [(a, b) for a, b in merged]
+
+
+def locked_out_s(lockouts: List[Tuple[float, float]], start: float, end: float) -> float:
+    return sum(max(0.0, min(b, end) - max(a, start)) for a, b in lockouts)
+
+
+def _locked_at(lockouts: List[Tuple[float, float]], ts: float) -> bool:
+    return any(a <= ts < b for a, b in lockouts)
+
+
+def _rate(passed: int, failed: int) -> str:
+    return f"{100 * passed / (passed + failed):.0f}%" if passed + failed else "—"
+
+
+def _day(ts: float, cfg: dict) -> str:
+    return policy.when(ts, cfg)
+
+
+def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
+    db.row_factory = sqlite3.Row
+    lines: List[str] = []
+    say = lines.append
+    lockouts = _lockouts(db)
+    pol = cfg["policy"]
+
+    say("weeks (the goal: no days without Claude Code, pass rate holding)")
+    for start, end in _weeks(now, cfg):
+        upto = min(end, now)
+        r = db.execute("SELECT SUM(verified=1) v, SUM(verified=0) f FROM attempts WHERE ts>=? AND ts<?",
+                       (start, end)).fetchone()
+        spend = db.execute("SELECT COALESCE(SUM(cost),0) FROM attempts WHERE rung='openrouter' AND ts>=? AND ts<?",
+                           (start, end)).fetchone()[0]
+        days = locked_out_s(lockouts, start, upto) / DAY
+        say(f"  week of {_day(start, cfg)}   without Claude Code {days:4.1f} days   "
+            f"verified {_rate(r['v'] or 0, r['f'] or 0):>4}   openrouter {spend:7.2f}")
+
+    say("\nopenrouter spend by month")
+    months = db.execute("SELECT ts, cost FROM attempts WHERE rung='openrouter' AND cost>0").fetchall()
+    by_month: dict = {}
+    for m in months:
+        key = datetime.fromtimestamp(m["ts"]).strftime("%Y-%m")
+        by_month[key] = by_month.get(key, 0.0) + m["cost"]
+    for key in sorted(by_month)[-3:]:
+        say(f"  {key}  {by_month[key]:8.2f}")
+    if not by_month:
+        say("  none")
+
+    say("\nrungs (all time)")
+    for r in db.execute("SELECT rung, COUNT(*) n, SUM(verified=1) v, SUM(verified=0) f, SUM(verified IS NULL) u, "
+                        "ROUND(SUM(cost),2) cost, AVG(duration_s) dur FROM attempts GROUP BY rung ORDER BY rung"):
+        say(f"  {r['rung']:<11} attempts {r['n']:>4}   verified {r['v'] or 0:>4}   failed {r['f'] or 0:>4}"
+            f"   pass {_rate(r['v'] or 0, r['f'] or 0):>4}   unlabelled {r['u'] or 0:>4}"
+            f"   cost {r['cost'] or 0:>8}   avg {r['dur'] or 0:>5.0f}s")
+
+    say("\ncoder attempts by why it ran")
+    groups = {"sure thing": [0, 0], "fallback": [0, 0], "forced (local mode)": [0, 0]}
+    rows = db.execute("""
+        SELECT a.ts, a.verified, d.mode FROM attempts a LEFT JOIN decisions d ON d.id = a.decision_id
+        WHERE a.rung='coder' AND a.verified IS NOT NULL""").fetchall()
+    for r in rows:
+        if (r["mode"] or "auto") == "local":
+            key = "forced (local mode)"
+        elif _locked_at(lockouts, r["ts"]):
+            key = "fallback"
+        else:
+            key = "sure thing"
+        groups[key][0 if r["verified"] else 1] += 1
+    for key, (v, f) in groups.items():
+        say(f"  {key:<20} {v:>3}/{v + f:<3} passed ({_rate(v, f)})")
+    say("  A weak fallback rate is the case for a heavier local model behind Claude Code.")
+
+    near, fallback = float(pol["local_threshold"]), float(pol["fallback_threshold"])
+    rows = db.execute("""
+        SELECT d.verdict, a.verified FROM decisions d
+        JOIN attempts a ON a.decision_id = d.id AND a.rung = 'coder'
+        WHERE d.verdict IS NOT NULL AND a.verified IS NOT NULL""").fetchall()
+    say(f"\njudge calibration on {len(rows)} labelled coder attempts")
+    edges = [(0.0, fallback), (fallback, near), (near, 1.0001)]
+    counts = [[0, 0] for _ in edges]
     for r in rows:
         p = json.loads(r["verdict"])["p_local"]
-        buckets.setdefault(min(int(p * 5), 4), []).append(int(r["verified"]))
-    for b in sorted(buckets):
-        vals = buckets[b]
-        print(f"  P(local) {b / 5:.1f}-{(b + 1) / 5:.1f}: {sum(vals):>3}/{len(vals):<3} passed "
-              f"({100 * sum(vals) / len(vals):.0f}%)")
-    print("  local_threshold belongs where the pass rate stops being worth the wait.")
+        for i, (lo, hi) in enumerate(edges):
+            if lo <= p < hi:
+                counts[i][0 if r["verified"] else 1] += 1
+    for (lo, hi), (v, f) in zip(edges, counts):
+        say(f"  P(local) {lo:.2f}-{min(hi, 1.0):.2f}: {v:>3}/{v + f:<3} passed ({_rate(v, f)})")
+    say(f"  local_threshold ({near}) belongs where the pass rate is near-certain;"
+        f" fallback_threshold ({fallback}) where a try still beats paying OpenRouter.")
 
-esc = db.execute("""
-    SELECT COUNT(DISTINCT decision_id) FROM attempts a
-    WHERE rung != 'coder' AND decision_id IN (SELECT decision_id FROM attempts WHERE rung='coder' AND verified=0)
-""").fetchone()[0]
-print(f"\ncoder failures that escalated to a paid rung: {esc}")
+    hits = db.execute("SELECT ts, until, reset_source FROM limit_hits ORDER BY ts DESC LIMIT 5").fetchall()
+    if hits:
+        say("\nrecent Claude Code limit hits")
+        for h in hits:
+            say(f"  {_day(h['ts'], cfg)}  locked out until {_day(h['until'], cfg)}"
+                f"  ({h['reset_source'] or 'weekly reset'})")
+    return "\n".join(lines)
 
-hits = db.execute("SELECT ts, spent FROM limit_hits ORDER BY ts DESC LIMIT 4").fetchall()
-if hits:
-    print("\nweekly limit hits (spend when it hit; their median becomes the budget)")
-    from datetime import datetime
-    for h in hits:
-        print(f"  {datetime.fromtimestamp(h['ts']):%Y-%m-%d %H:%M}  spent {h['spent']:.2f}")
+
+def main() -> None:
+    db_path = settings.ledger_path()
+    if not db_path.exists():
+        sys.exit(f"no ledger yet at {db_path}: nothing has been routed")
+    print(f"ledger: {db_path}\n")
+    # Opened through Ledger so an older ledger gains the current columns first.
+    print(render(Ledger(db_path).db, settings.load(), time.time()))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-"""SQLite ledger: every routing decision, every attempt, every weekly-limit hit.
+"""SQLite ledger: every routing decision, every attempt, every Claude Code limit hit.
 
 The attempts table is the training set. A coder attempt that passed /verify is a positive
 label for "local can do this"; one that failed is a negative. After a few weeks this is what
@@ -11,7 +11,6 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from statistics import median
 from typing import Any, Dict, List, Optional
 
 SCHEMA = """
@@ -23,7 +22,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     rung TEXT NOT NULL,
     reason TEXT NOT NULL,
     verdict TEXT,            -- JSON from judge.verdict_dict, NULL when the judge was down
-    pace TEXT                -- JSON snapshot of the pacer
+    claude TEXT,             -- JSON: Claude Code's availability when the decision was made
+    commit_sha TEXT,         -- workdir HEAD at route() time; with the brief, makes the task replayable
+    dirty INTEGER,           -- 1 if the workdir had uncommitted changes then
+    mode TEXT                -- the session's routing mode: auto, claude or local
 );
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +45,9 @@ CREATE TABLE IF NOT EXISTS limit_hits (
     ts REAL NOT NULL,
     window_start REAL NOT NULL,
     spent REAL NOT NULL,     -- claude cost units spent in the window when the limit hit
-    until REAL NOT NULL      -- next reset; claude is skipped until then
+    until REAL NOT NULL,     -- claude is skipped until then
+    reset_source TEXT,       -- "stated": read from the error; "fallback": unreadable, short lockout
+    raw TEXT                 -- the error text, to fix the limit and reset parsing against
 );
 CREATE INDEX IF NOT EXISTS attempts_ts ON attempts(ts);
 CREATE INDEX IF NOT EXISTS attempts_decision ON attempts(decision_id);
@@ -58,16 +62,30 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._add_missing_columns("decisions", {"claude": "TEXT", "commit_sha": "TEXT", "dirty": "INTEGER", "mode": "TEXT"})
+        self._add_missing_columns("limit_hits", {"reset_source": "TEXT", "raw": "TEXT"})
+
+    def _add_missing_columns(self, table: str, columns: Dict[str, str]) -> None:
+        """Bring a ledger written by an older version up to the current schema, keeping its rows."""
+        have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+        with self.db:
+            for name, sql_type in columns.items():
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
     # -- writes -------------------------------------------------------------
     def add_decision(self, brief: str, workdir: Optional[str], rung: str, reason: str,
-                     verdict: Optional[dict], pace: Optional[dict]) -> str:
+                     verdict: Optional[dict], claude: Optional[dict],
+                     commit_sha: Optional[str] = None, dirty: Optional[bool] = None,
+                     mode: str = "auto") -> str:
         decision_id = uuid.uuid4().hex[:12]
         with self.db:
             self.db.execute(
-                "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO decisions (id, ts, brief, workdir, rung, reason, verdict, claude, commit_sha, dirty, mode)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (decision_id, time.time(), brief, workdir, rung, reason,
-                 json.dumps(verdict) if verdict else None, json.dumps(pace) if pace else None),
+                 json.dumps(verdict) if verdict else None, json.dumps(claude) if claude else None,
+                 commit_sha, _tri(dirty), mode),
             )
         return decision_id
 
@@ -103,9 +121,13 @@ class Ledger:
                 )
         return True
 
-    def add_limit_hit(self, window_start: float, spent: float, until: float) -> None:
+    def add_limit_hit(self, until: float, raw: str = "", reset_source: str = "stated",
+                      window_start: float = 0.0, spent: float = 0.0) -> None:
         with self.db:
-            self.db.execute("INSERT INTO limit_hits VALUES (?,?,?,?)", (time.time(), window_start, spent, until))
+            self.db.execute(
+                "INSERT INTO limit_hits (ts, window_start, spent, until, reset_source, raw) VALUES (?,?,?,?,?,?)",
+                (time.time(), window_start, spent, until, reset_source, raw),
+            )
 
     # -- reads --------------------------------------------------------------
     def decision(self, decision_id: str) -> Optional[sqlite3.Row]:
@@ -120,14 +142,6 @@ class Ledger:
     def exhausted_until(self, now: float) -> Optional[float]:
         row = self.db.execute("SELECT MAX(until) FROM limit_hits WHERE until>?", (now,)).fetchone()
         return float(row[0]) if row and row[0] else None
-
-    def observed_budget(self, last: int = 4) -> Optional[float]:
-        """Median spend at the last few limit hits: the empirical size of the weekly limit."""
-        rows = self.db.execute(
-            "SELECT spent FROM limit_hits WHERE spent>0 ORDER BY ts DESC LIMIT ?", (last,)
-        ).fetchall()
-        values = [float(r[0]) for r in rows]
-        return median(values) if values else None
 
     def stats(self, since: float) -> Dict[str, Any]:
         rows = self.db.execute(

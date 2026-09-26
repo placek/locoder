@@ -1,10 +1,8 @@
-"""Weekly pacing of the Claude Code (Max) limit, and the rung decision built on it.
+"""Where a delegated task starts, and where it goes if that fails.
 
-The limit is weekly and opaque, so the pacer works in whatever cost unit Claude Code reports
-(``total_cost_usd`` in ``--output-format json``) and learns the size of the week from the
-spend recorded at each limit hit. Spending is allowed to run ``pace_slack`` ahead of a
-straight line across the week; beyond that, Claude Code is kept for hard tasks only and the
-rest goes to OpenRouter, so the limit lasts until the reset instead of dying two days early.
+Claude Code is the default worker and is spent freely; there is no rationing. The local
+coder takes a task up front only when the judge is near-certain it will finish, and covers
+for Claude Code while a limit has it locked out. OpenRouter is the last resort.
 """
 from __future__ import annotations
 
@@ -15,14 +13,17 @@ from zoneinfo import ZoneInfo
 
 from .judge import Verdict
 
-WEEK_S = 7 * 24 * 3600
 RUNGS = ("coder", "claude", "openrouter")
+# A session's routing mode: "auto" routes by the judge; "claude" and "local" force one rung.
+MODES = ("auto", "claude", "local")
+# The decision's rung when nothing may run: the task goes back to the user.
+HAND_BACK = "user"
 
 
 def window_bounds(now: float, reset_weekday: int, reset_hour: int, tz: str) -> Tuple[float, float]:
-    """Start and end (epoch seconds) of the weekly window containing *now*.
+    """Start and end (epoch seconds) of the weekly Max window containing *now*.
 
-    ``reset_weekday``: 0 = Monday ... 6 = Sunday, local to *tz*.
+    ``reset_weekday``: 0 = Monday ... 6 = Sunday, local to *tz*. Used to group results by week.
     """
     zone = ZoneInfo(tz)
     local = datetime.fromtimestamp(now, zone)
@@ -34,90 +35,79 @@ def window_bounds(now: float, reset_weekday: int, reset_hour: int, tz: str) -> T
     return start.timestamp(), end.timestamp()
 
 
+def week_bounds(now: float, cfg: dict) -> Tuple[float, float]:
+    week = cfg["claude"]["week"]
+    return window_bounds(now, int(week["reset_weekday"]), int(week["reset_hour"]), week["timezone"])
+
+
 @dataclass
-class Pace:
-    window_start: float
-    window_end: float
-    elapsed: float        # 0..1 share of the week gone
-    spent: float
-    budget: float
-    budget_source: str    # "observed" (median of limit hits) or "configured"
-    allowance: float      # what may be spent by now: budget * (elapsed + slack)
-    exhausted_until: Optional[float]
+class ClaudeState:
+    """Whether Claude Code can take work now. Only a recorded limit hit makes it unavailable."""
+    unavailable_until: Optional[float]
 
     @property
-    def exhausted(self) -> bool:
-        return self.exhausted_until is not None
-
-    @property
-    def ahead(self) -> bool:
-        return self.spent > self.allowance
+    def available(self) -> bool:
+        return self.unavailable_until is None
 
     def as_dict(self) -> dict:
-        d = asdict(self)
-        d.update(exhausted=self.exhausted, ahead=self.ahead,
-                 spent=round(self.spent, 2), budget=round(self.budget, 2),
-                 allowance=round(self.allowance, 2), elapsed=round(self.elapsed, 3))
-        return d
+        return dict(asdict(self), available=self.available)
 
 
-def pace(ledger, now: float, cfg: dict) -> Pace:
-    week = cfg["claude"]["week"]
-    start, end = window_bounds(now, int(week["reset_weekday"]), int(week["reset_hour"]), week["timezone"])
-    observed = ledger.observed_budget()
-    budget = observed if observed else float(cfg["claude"]["weekly_budget"])
-    elapsed = min(1.0, max(0.0, (now - start) / WEEK_S))
-    slack = float(cfg["policy"]["pace_slack"])
-    return Pace(
-        window_start=start, window_end=end, elapsed=elapsed,
-        spent=ledger.claude_spent(start), budget=budget,
-        budget_source="observed" if observed else "configured",
-        allowance=budget * min(1.0, elapsed + slack),
-        exhausted_until=ledger.exhausted_until(now),
-    )
+def claude_state(ledger, now: float) -> ClaudeState:
+    return ClaudeState(unavailable_until=ledger.exhausted_until(now))
 
 
 @dataclass
 class Decision:
-    rung: str
+    rung: str             # the first rung to run, or HAND_BACK when none may
     reason: str
-    chain: List[str]      # where the cascade goes if this rung fails verification
+    chain: List[str]      # rungs in order; a rung listed twice is its one retry. After the last: the user.
 
 
-def paid_rung(p: Pace, expected_difficulty: Optional[float], cfg: dict) -> Tuple[str, str]:
-    """Claude Code or OpenRouter, given the pace and how hard the task looks."""
-    openrouter_ok = bool(cfg["openrouter"]["enabled"])
-    if p.exhausted:
-        if openrouter_ok:
-            return "openrouter", "Claude Code weekly limit exhausted until the reset"
-        return "claude", "Claude Code exhausted and OpenRouter disabled; it will fail until the reset"
-    hard = expected_difficulty is not None and expected_difficulty >= float(cfg["policy"]["hard_difficulty"])
-    if not p.ahead:
-        return "claude", "Claude Code within weekly pace"
-    if hard or not openrouter_ok:
-        return "claude", "ahead of weekly pace, but the task is hard enough to spend Claude Code on"
-    return "openrouter", "ahead of weekly pace: saving Claude Code for harder tasks"
+def when(ts: float, cfg: dict) -> str:
+    return datetime.fromtimestamp(ts, ZoneInfo(cfg["claude"]["week"]["timezone"])).strftime("%a %d %b %H:%M")
 
 
-def decide(verdict: Optional[Verdict], p: Pace, cfg: dict, judge_error: Optional[str] = None) -> Decision:
+def decide(verdict: Optional[Verdict], claude: ClaudeState, cfg: dict,
+           judge_error: Optional[str] = None, mode: str = "auto") -> Decision:
     pol = cfg["policy"]
-    paid, paid_reason = paid_rung(p, verdict.expected_difficulty if verdict else None, cfg)
-    # The other paid rung backs the chosen one up, when it is usable at all.
-    alt = "openrouter" if paid == "claude" else "claude"
-    alt_usable = cfg["openrouter"]["enabled"] if alt == "openrouter" else not p.exhausted
-    tail = [paid, alt] if alt_usable else [paid]
-
     if verdict is None:
-        rung = pol["fail_open_rung"] if pol["fail_open_rung"] in RUNGS else "coder"
-        reason = f"judge unavailable ({judge_error}); starting on {rung}, the cascade escalates on failure"
-        return Decision(rung, reason, [rung] + [r for r in tail if r != rung])
+        seen = f"judge unavailable ({judge_error})"
+    else:
+        seen = f"judge: P(local finishes)={verdict.p_local:.2f}, difficulty≈{verdict.expected_difficulty:.1f}"
 
-    local_ok = (verdict.p_local >= float(pol["local_threshold"])
-                and verdict.expected_difficulty <= float(pol["local_max_difficulty"]))
-    if local_ok:
-        reason = (f"judge: P(local finishes)={verdict.p_local:.2f}, "
-                  f"difficulty≈{verdict.expected_difficulty:.1f}; trying the local coder first")
-        return Decision("coder", reason, ["coder"] + tail)
-    reason = (f"judge: P(local finishes)={verdict.p_local:.2f}, difficulty≈{verdict.expected_difficulty:.1f}"
-              f" — skipping the coder; {paid_reason}")
-    return Decision(paid, reason, tail)
+    if mode == "local":
+        return Decision("coder", f"routing mode local forces the coder, with no retry ({seen})", ["coder"])
+    if mode == "claude":
+        if claude.available:
+            return Decision("claude", f"routing mode claude forces Claude Code ({seen})", ["claude", "claude"])
+        return Decision(HAND_BACK, f"routing mode claude, and Claude Code is unavailable until "
+                                   f"{when(claude.unavailable_until, cfg)}: back to the user", [])
+
+    if claude.available:
+        near_certain = (verdict is not None
+                        and verdict.p_local >= float(pol["local_threshold"])
+                        and verdict.expected_difficulty <= float(pol["local_max_difficulty"]))
+        if near_certain:
+            return Decision("coder", f"{seen}; near-certain, so the local coder goes first",
+                            ["coder", "claude", "claude"])
+        return Decision("claude", f"{seen}; Claude Code is the default", ["claude", "claude"])
+
+    out = f"Claude Code unavailable until {when(claude.unavailable_until, cfg)}"
+    if not cfg["openrouter"]["enabled"]:
+        return Decision("coder", f"{seen}; {out} and OpenRouter disabled: the local coder is all that is left",
+                        ["coder"])
+    worth_a_try = verdict is not None and verdict.p_local >= float(pol["fallback_threshold"])
+    if worth_a_try:
+        return Decision("coder", f"{seen}; {out}: the local coder has a fair chance, OpenRouter backs it up",
+                        ["coder", "openrouter"])
+    return Decision("openrouter", f"{seen}; {out}: too unlikely for the local coder", ["openrouter"])
+
+
+def paid_rung(claude: ClaudeState, cfg: dict) -> Tuple[str, str]:
+    """escalate(backend='auto'): Claude Code while it is available, else OpenRouter."""
+    if claude.available:
+        return "claude", "Claude Code is available"
+    if cfg["openrouter"]["enabled"]:
+        return "openrouter", f"Claude Code unavailable until {when(claude.unavailable_until, cfg)}"
+    return "claude", "Claude Code is locked out and OpenRouter disabled; it will fail until the reset"

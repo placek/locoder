@@ -1,6 +1,6 @@
 name: locoder-routing
 version: 0.1.0
-description: "Decides where a delegated coding task starts (local coder, Claude Code, or Claude Code on OpenRouter), runs the paid rungs, paces the weekly Claude Code limit, and logs every decision and outcome to a local SQLite ledger."
+description: "Decides where a delegated coding task starts (local coder, Claude Code, or a one-shot Hermes run on OpenRouter), runs the paid rungs, routes around Claude Code while a limit has it locked out, and logs every decision and outcome to a local SQLite ledger."
 author: placek
 license: MIT
 kind: standalone
@@ -9,3 +9,4 @@ provides_tools:
   - escalate
   - route_outcome
   - routing_status
+  - routing_mode

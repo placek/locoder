@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import stat
+import subprocess
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -94,7 +95,7 @@ def test_judge_unreachable_raises_judge_error():
         Judge("http://127.0.0.1:9/v1", "judge", timeout_s=1).judge("x")
 
 
-# -- pacing & policy ---------------------------------------------------------
+# -- policy ------------------------------------------------------------------
 
 def test_window_starts_at_last_reset():
     start, end = policy.window_bounds(at(2026, 9, 26), 0, 9, TZ)  # Saturday
@@ -111,46 +112,105 @@ def verdict(p_local, expected):
     return Verdict(p_local=p_local, difficulty={}, expected_difficulty=expected, coverage=1.0)
 
 
-def pace_obj(spent=0.0, elapsed=0.5, budget=100.0, exhausted_until=None):
-    return policy.Pace(0, 0, elapsed, spent, budget, "configured", budget * min(1, elapsed + 0.1), exhausted_until)
+AVAILABLE = policy.ClaudeState(unavailable_until=None)
+LOCKED_OUT = policy.ClaudeState(unavailable_until=at(2026, 9, 28, 9))
 
 
-def test_easy_task_starts_on_coder_with_paid_chain():
-    d = policy.decide(verdict(0.9, 0.8), pace_obj(), cfg())
-    assert d.rung == "coder" and d.chain == ["coder", "claude", "openrouter"]
+def test_near_certain_task_starts_on_coder_then_claude_with_one_retry():
+    d = policy.decide(verdict(0.9, 0.3), AVAILABLE, cfg())
+    assert d.rung == "coder" and d.chain == ["coder", "claude", "claude"]
 
 
-def test_hard_task_skips_coder_when_on_pace():
-    d = policy.decide(verdict(0.3, 2.2), pace_obj(spent=10), cfg())
+def test_merely_likely_task_starts_on_claude():
+    d = policy.decide(verdict(0.7, 0.3), AVAILABLE, cfg())
+    assert d.rung == "claude" and d.chain == ["claude", "claude"]
+
+
+def test_confident_judge_but_not_trivial_task_starts_on_claude():
+    d = policy.decide(verdict(0.9, 0.8), AVAILABLE, cfg())
     assert d.rung == "claude"
 
 
-def test_ahead_of_pace_sends_medium_task_to_openrouter():
-    d = policy.decide(verdict(0.3, 2.0), pace_obj(spent=90, elapsed=0.4), cfg())
-    assert d.rung == "openrouter" and d.chain == ["openrouter", "claude"]
+def test_locked_out_with_fair_chance_tries_coder_then_openrouter():
+    d = policy.decide(verdict(0.4, 2.0), LOCKED_OUT, cfg())
+    assert d.rung == "coder" and d.chain == ["coder", "openrouter"]
+    assert "unavailable until Mon 28 Sep 09:00" in d.reason
 
 
-def test_ahead_of_pace_still_spends_claude_on_very_hard_task():
-    d = policy.decide(verdict(0.1, 2.8), pace_obj(spent=90, elapsed=0.4), cfg())
-    assert d.rung == "claude"
-
-
-def test_exhausted_goes_to_openrouter_and_drops_claude_from_chain():
-    d = policy.decide(verdict(0.1, 2.8), pace_obj(exhausted_until=1e12), cfg())
+def test_locked_out_and_unlikely_goes_straight_to_openrouter():
+    d = policy.decide(verdict(0.2, 2.8), LOCKED_OUT, cfg())
     assert d.rung == "openrouter" and d.chain == ["openrouter"]
 
 
-def test_judge_down_fails_open_to_coder():
-    d = policy.decide(None, pace_obj(), cfg(), judge_error="connection refused")
-    assert d.rung == "coder" and "connection refused" in d.reason
+def test_locked_out_without_openrouter_leaves_only_the_coder():
+    d = policy.decide(verdict(0.1, 2.8), LOCKED_OUT, cfg(openrouter={"enabled": False}))
+    assert d.rung == "coder" and d.chain == ["coder"]
 
 
-def test_observed_budget_replaces_configured(tmp_path):
+def test_judge_down_starts_on_claude():
+    d = policy.decide(None, AVAILABLE, cfg(), judge_error="connection refused")
+    assert d.rung == "claude" and "connection refused" in d.reason
+
+
+def test_judge_down_while_locked_out_is_treated_as_pessimistic():
+    d = policy.decide(None, LOCKED_OUT, cfg(), judge_error="connection refused")
+    assert d.rung == "openrouter"
+
+
+def test_thresholds_come_from_config():
+    c = cfg(policy={"local_threshold": 0.6, "local_max_difficulty": 1.5, "fallback_threshold": 0.5})
+    assert policy.decide(verdict(0.7, 1.2), AVAILABLE, c).rung == "coder"
+    assert policy.decide(verdict(0.4, 2.0), LOCKED_OUT, c).rung == "openrouter"
+
+
+def test_local_mode_forces_the_coder_with_no_retry():
+    d = policy.decide(verdict(0.05, 3.0), AVAILABLE, cfg(), mode="local")
+    assert d.rung == "coder" and d.chain == ["coder"]
+
+
+def test_claude_mode_forces_claude_with_its_retry():
+    d = policy.decide(verdict(0.99, 0.0), AVAILABLE, cfg(), mode="claude")
+    assert d.rung == "claude" and d.chain == ["claude", "claude"]
+
+
+def test_claude_mode_while_locked_out_hands_back_with_the_reset():
+    d = policy.decide(verdict(0.5, 1.0), LOCKED_OUT, cfg(), mode="claude")
+    assert d.rung == policy.HAND_BACK and d.chain == []
+    assert "Mon 28 Sep 09:00" in d.reason
+
+
+def test_paid_rung_is_claude_until_locked_out():
+    assert policy.paid_rung(AVAILABLE, cfg())[0] == "claude"
+    assert policy.paid_rung(LOCKED_OUT, cfg())[0] == "openrouter"
+
+
+def test_limit_hit_makes_claude_unavailable_until_it_lapses(tmp_path):
     led = Ledger(tmp_path / "l.db")
-    for spent in (80, 100, 120):
-        led.add_limit_hit(0, spent, 0)
-    p = policy.pace(led, at(2026, 9, 24), cfg())
-    assert p.budget == 100 and p.budget_source == "observed"
+    led.add_limit_hit(at(2026, 9, 28, 9))
+    assert not policy.claude_state(led, at(2026, 9, 26)).available
+    assert policy.claude_state(led, at(2026, 9, 28, 10)).available
+
+
+def test_old_ledger_gains_claude_column_and_keeps_rows(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(str(path))
+    old.execute("CREATE TABLE decisions (id TEXT PRIMARY KEY, ts REAL NOT NULL, brief TEXT NOT NULL, workdir TEXT,"
+                " rung TEXT NOT NULL, reason TEXT NOT NULL, verdict TEXT, pace TEXT)")
+    old.execute("INSERT INTO decisions VALUES ('a', 1, 'b', NULL, 'coder', 'r', NULL, '{}')")
+    old.execute("CREATE TABLE limit_hits (ts REAL NOT NULL, window_start REAL NOT NULL, spent REAL NOT NULL,"
+                " until REAL NOT NULL)")
+    old.execute("INSERT INTO limit_hits VALUES (1, 0, 5, 2)")
+    old.commit()
+    old.close()
+    led = Ledger(path)
+    new_id = led.add_decision("brief", None, "claude", "why", None, {"available": True})
+    assert led.decision("a")["rung"] == "coder"
+    assert json.loads(led.decision(new_id)["claude"]) == {"available": True}
+    led.add_limit_hit(3, raw="limit", reset_source="fallback")
+    assert led.decision(new_id)["commit_sha"] is None
+    rows = led.db.execute("SELECT until, reset_source, raw FROM limit_hits ORDER BY ts").fetchall()
+    assert [tuple(r) for r in rows] == [(2, None, None), (3, "fallback", "limit")]
 
 
 # -- backends ----------------------------------------------------------------
@@ -161,6 +221,39 @@ def test_parse_detects_limit_hit():
     assert r.limit_hit and not r.ok
 
 
+THU_NOON = at(2026, 9, 24, 12)
+
+
+@pytest.mark.parametrize("text, expected", [
+    # Wordings are invented but plausible; replace with real ones from the ledger's raw column.
+    ("Session limit reached ∙ resets 3pm", at(2026, 9, 24, 15)),
+    ("You've hit your limit · resets at 9am", at(2026, 9, 25, 9)),
+    ("Limit reached, resets at 17:30", datetime(2026, 9, 24, 17, 30, tzinfo=ZoneInfo(TZ)).timestamp()),
+    ("You've hit your weekly usage limit. Resets Monday 9am", at(2026, 9, 28, 9)),
+    ("Weekly limit reached ∙ resets Sep 28, 1pm", at(2026, 9, 28, 13)),
+    ("Usage limit reached. Resets in 2h 30m", THU_NOON + 2.5 * 3600),
+    ("5-hour limit reached, resets in 45 minutes", THU_NOON + 45 * 60),
+    ("Claude AI usage limit reached|1790260000", 1790260000.0),
+])
+def test_reset_time_reads_clock_date_and_relative_forms(text, expected):
+    assert backends.reset_time(text, THU_NOON, TZ) == pytest.approx(expected)
+
+
+def test_reset_time_honours_a_timezone_named_in_the_error():
+    got = backends.reset_time("Session limit reached ∙ resets 3pm (UTC)", THU_NOON, TZ)
+    assert got == datetime(2026, 9, 24, 15, tzinfo=ZoneInfo("UTC")).timestamp()
+
+
+@pytest.mark.parametrize("text", [
+    "Usage limit reached.",
+    "Claude AI usage limit reached|1000000000",      # in the past
+    "Weekly limit reached ∙ resets Dec 24, 1pm",     # months away: not a limit reset
+    "limit reached, resets 3",                       # no minutes or am/pm: too ambiguous
+])
+def test_reset_time_unreadable_is_none(text):
+    assert backends.reset_time(text, THU_NOON, TZ) is None
+
+
 def test_parse_success_reads_cost_and_turns():
     out = json.dumps({"is_error": False, "result": "done", "total_cost_usd": 1.25, "num_turns": 7, "session_id": "s"})
     r = backends.parse("claude", out, "", 0, 3.0)
@@ -168,21 +261,37 @@ def test_parse_success_reads_cost_and_turns():
 
 
 def test_subscription_env_strips_api_billing_vars():
-    env = backends.environment(cfg(), "claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin"})
+    env = backends.environment("claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin"})
     assert "ANTHROPIC_API_KEY" not in env and env["PATH"] == "/bin"
 
 
-def test_openrouter_env_points_claude_code_at_gateway(tmp_path):
-    c = cfg(openrouter={"config_dir": str(tmp_path / "cc")})
-    env = backends.environment(c, "openrouter", {"OPENROUTER_API_KEY": "or-key"})
-    assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "or-key" and env["ANTHROPIC_API_KEY"] == ""
-    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cc")
+def test_openrouter_command_runs_this_profile_one_shot(tmp_path):
+    cmd = backends.command(cfg(), "openrouter", "do it", usage_file=tmp_path / "u.json", workdir=tmp_path)
+    assert cmd == ["locoder", "-z", "do it", "-m", "deepseek/deepseek-v4.1-flash",
+                   "--provider", "custom:openrouter", "--in", str(tmp_path),
+                   "--usage-file", str(tmp_path / "u.json"), "-t", "coding"]
+    assert "claude" not in cmd
 
 
-def test_openrouter_without_key_is_refused():
-    with pytest.raises(backends.BackendError):
-        backends.environment(cfg(), "openrouter", {})
+def test_openrouter_env_keeps_the_profile_env():
+    env = backends.environment("openrouter", {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"})
+    assert env == {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"}
+
+
+def test_parse_oneshot_reads_usage_and_exit_code():
+    usage = {"estimated_cost_usd": 0.12, "cost_status": "estimated", "api_calls": 5, "session_id": "s"}
+    r = backends.parse_oneshot("all done\n", "", 0, 3.0, usage)
+    assert r.ok and r.cost == 0.12 and r.turns == 5 and r.result == "all done" and r.cost_status == "estimated"
+    failed = backends.parse_oneshot("", "boom", 2, 3.0, None)
+    assert not failed.ok and failed.cost == 0.0 and failed.result == "boom" and not failed.limit_hit
+
+
+def test_parse_oneshot_reads_a_real_failed_usage_file():
+    # What the pinned Hermes wrote when its client failed to start: every field null.
+    usage = {k: None for k in ("estimated_cost_usd", "cost_status", "api_calls", "session_id", "completed")}
+    usage.update(failed=True, failure="Failed to initialize OpenAI client")
+    r = backends.parse_oneshot("", "hermes -z: agent failed: Failed to initialize OpenAI client", 1, 2.0, usage)
+    assert not r.ok and r.cost == 0.0 and r.turns is None and "agent failed" in r.result
 
 
 def test_workdir_outside_roots_is_refused(tmp_path):
@@ -196,14 +305,27 @@ def test_workdir_outside_roots_is_refused(tmp_path):
 
 FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys
-if os.environ.get("ANTHROPIC_BASE_URL"):
-    print(json.dumps({"is_error": False, "result": "done via openrouter", "total_cost_usd": 0.4, "num_turns": 3}))
-else:
-    mode = open(os.environ["FAKE_CLAUDE_MODE"]).read().strip()
-    if mode == "limit":
-        print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
-        sys.exit(1)
-    print(json.dumps({"is_error": False, "result": "done via max", "total_cost_usd": 2.5, "num_turns": 9}))
+mode = open(os.environ["FAKE_CLAUDE_MODE"]).read().strip()
+if mode == "limit":
+    print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
+    sys.exit(1)
+if mode == "limit-no-reset":
+    print(json.dumps({"is_error": True, "result": "Usage limit reached."}))
+    sys.exit(1)
+print(json.dumps({"is_error": False, "result": "done via max", "total_cost_usd": 2.5, "num_turns": 9}))
+"""
+
+
+FAKE_HERMES = """#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+usage = argv[argv.index("--usage-file") + 1]
+open(os.environ["FAKE_HERMES_ARGV"], "w").write(json.dumps(argv))
+fail = open(os.environ["FAKE_HERMES_MODE"]).read().strip() == "fail"
+json.dump({"estimated_cost_usd": 0.4, "cost_status": "estimated", "api_calls": 3, "session_id": "h1",
+           "completed": not fail}, open(usage, "w"))
+print("gave up" if fail else "done via openrouter")
+sys.exit(2 if fail else 0)
 """
 
 
@@ -222,22 +344,29 @@ def router(tmp_path, monkeypatch):
     claude = tmp_path / "claude"
     claude.write_text(FAKE_CLAUDE)
     claude.chmod(claude.stat().st_mode | stat.S_IEXEC)
+    hermes = tmp_path / "locoder"
+    hermes.write_text(FAKE_HERMES)
+    hermes.chmod(hermes.stat().st_mode | stat.S_IEXEC)
     mode = tmp_path / "mode"
     mode.write_text("ok")
+    hermes_mode = tmp_path / "hermes-mode"
+    hermes_mode.write_text("ok")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", str(mode))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("FAKE_HERMES_MODE", str(hermes_mode))
+    monkeypatch.setenv("FAKE_HERMES_ARGV", str(tmp_path / "hermes-argv"))
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
-            openrouter={"config_dir": str(tmp_path / "cc")})
-    state = {"verdict": verdict(0.9, 0.5)}
-    r = Router(clock=lambda: at(2026, 9, 24), judge_factory=lambda _c: FakeJudge(state["verdict"]),
+            openrouter={"hermes_bin": str(hermes)})
+    state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24)}
+    r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c)
-    r.test = {"mode": mode, "proj": str(tmp_path / "proj"), "state": state}
+    r.test = {"mode": mode, "hermes_mode": hermes_mode, "argv": tmp_path / "hermes-argv",
+              "proj": str(tmp_path / "proj"), "state": state}
     return r
 
 
-def call(fn, **args):
-    out = fn(args)
+def call(fn, session=None, **args):
+    out = fn(args, **({"session_id": session} if session else {}))
     if asyncio.iscoroutine(out):
         out = asyncio.run(out)
     return json.loads(out)
@@ -255,24 +384,116 @@ def test_escalate_runs_claude_and_records_cost(router):
     d = call(router.route, brief="big feature", workdir=router.test["proj"])
     assert d["rung"] == "claude"
     r = call(router.escalate, brief="big feature", workdir=router.test["proj"], decision_id=d["decision_id"])
-    assert r["ok"] and r["backend"] == "claude" and r["runs"][0]["cost"] == 2.5
+    assert r["ok"] and r["backend"] == "claude" and r["run"]["cost"] == 2.5
     assert router.ledger.claude_spent(0) == 2.5
 
 
-def test_limit_hit_mid_run_falls_back_to_openrouter_and_blocks_claude(router):
+def test_limit_hit_mid_run_hands_back_the_locked_out_chain(router):
+    router.test["state"]["verdict"] = verdict(0.4, 1.8)
+    d = call(router.route, brief="medium task", workdir=router.test["proj"])
+    assert d["rung"] == "claude"
+    router.test["mode"].write_text("limit")
+    r = call(router.escalate, brief="medium task", workdir=router.test["proj"], decision_id=d["decision_id"])
+    assert not r["ok"] and r["backend"] == "claude"
+    assert r["chain"] == ["coder", "openrouter"]
+    assert r["claude_unavailable_until"] == "Mon 28 Sep 09:00"
+    assert router.ledger.db.execute("SELECT COUNT(*) FROM attempts WHERE rung='openrouter'").fetchone()[0] == 0
+
+
+def test_lockout_lasts_until_the_stated_reset_and_no_longer(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    router.test["state"]["verdict"] = verdict(0.1, 2.9)
+    assert call(router.route, brief="hard task")["rung"] == "openrouter"
+    assert call(router.status)["claude"]["available"] is False
+    router.test["state"]["now"] = at(2026, 9, 28, 9) + 60
+    assert call(router.route, brief="hard task")["rung"] == "claude"
+
+
+def test_escalate_without_a_decision_treats_the_rest_as_pessimistic(router):
     router.test["mode"].write_text("limit")
     r = call(router.escalate, brief="task", workdir=router.test["proj"])
-    assert [run["rung"] for run in r["runs"]] == ["claude", "openrouter"]
-    assert r["backend"] == "openrouter" and r["ok"]
-    router.test["state"]["verdict"] = verdict(0.1, 2.9)
-    assert call(router.route, brief="another hard task")["rung"] == "openrouter"
-    assert call(router.status)["pace"]["exhausted"] is True
+    assert r["chain"] == ["openrouter"]
+
+
+def test_unreadable_reset_locks_out_for_the_fallback_period_and_keeps_the_text(router):
+    router.test["mode"].write_text("limit-no-reset")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    hit = router.ledger.db.execute("SELECT until, reset_source, raw FROM limit_hits").fetchone()
+    assert hit["until"] == pytest.approx(at(2026, 9, 24) + 3600)
+    assert hit["reset_source"] == "fallback" and hit["raw"] == "Usage limit reached."
+    router.test["state"]["now"] = at(2026, 9, 24) + 3601
+    assert call(router.status)["claude"]["available"] is True
+
+
+def test_stated_reset_is_recorded_with_its_text(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    hit = router.ledger.db.execute("SELECT reset_source, raw FROM limit_hits").fetchone()
+    assert hit["reset_source"] == "stated" and "Resets Monday 9am" in hit["raw"]
 
 
 def test_route_with_judge_down_still_decides(router):
     router.test["state"]["verdict"] = None
     d = call(router.route, brief="anything")
-    assert d["rung"] == "coder" and d["judge"] is None
+    assert d["rung"] == "claude" and d["judge"] is None
+
+
+def _git(repo, *argv):
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+                   check=True, capture_output=True)
+
+
+def test_route_records_the_commit_and_dirty_state_of_a_git_workdir(router, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.txt").write_text("a")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "a")
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    clean = router.ledger.decision(call(router.route, brief="t", workdir=str(repo))["decision_id"])
+    assert clean["commit_sha"] == sha and clean["dirty"] == 0
+    (repo / "test_new.py").write_text("untracked failing test")
+    dirty = router.ledger.decision(call(router.route, brief="t", workdir=str(repo))["decision_id"])
+    assert dirty["commit_sha"] == sha and dirty["dirty"] == 1
+
+
+def test_route_without_git_records_no_commit(router):
+    for workdir in (router.test["proj"], None):
+        row = router.ledger.decision(call(router.route, brief="t", workdir=workdir)["decision_id"])
+        assert row["commit_sha"] is None and row["dirty"] is None
+
+
+def test_route_records_claude_availability_on_the_decision(router):
+    d = call(router.route, brief="small fix")
+    assert d["claude"]["available"] is True
+    assert json.loads(router.ledger.decision(d["decision_id"])["claude"])["available"] is True
+
+
+def test_openrouter_rung_runs_hermes_one_shot_and_records_its_cost(router):
+    d = call(router.route, brief="task", workdir=router.test["proj"])
+    r = call(router.escalate, brief="task", workdir=router.test["proj"], decision_id=d["decision_id"],
+             backend="openrouter")
+    assert r["ok"] and r["backend"] == "openrouter" and r["run"]["result"] == "done via openrouter"
+    assert r["run"]["cost_status"] == "estimated"
+    argv = json.loads(router.test["argv"].read_text())
+    assert argv[:2] == ["-z", "task"] and argv[argv.index("--in") + 1] == router.test["proj"]
+    assert router.ledger.stats(0)["openrouter"]["cost"] == 0.4
+
+
+def test_failed_openrouter_run_still_records_its_cost(router):
+    router.test["hermes_mode"].write_text("fail")
+    r = call(router.escalate, brief="task", workdir=router.test["proj"], backend="openrouter")
+    assert not r["ok"] and r["run"]["result"] == "gave up"
+    assert router.ledger.stats(0)["openrouter"]["cost"] == 0.4
+
+
+def test_auto_goes_to_openrouter_while_claude_is_locked_out(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    r = call(router.escalate, brief="task", workdir=router.test["proj"])
+    assert r["backend"] == "openrouter" and r["ok"]
 
 
 def test_escalate_rejects_workdir_outside_roots(router):
@@ -288,12 +509,46 @@ def test_register_puts_all_tools_in_coding_toolset():
 
     register(Ctx(), router=object.__new__(Router))
     assert seen == [("route", "coding", False), ("escalate", "coding", True),
-                    ("route_outcome", "coding", False), ("routing_status", "coding", False)]
+                    ("route_outcome", "coding", False), ("routing_status", "coding", False),
+                    ("routing_mode", "coding", False)]
 
 
 def test_settings_merge_routing_yaml(tmp_path):
     f = tmp_path / "routing.yaml"
     f.write_text("policy:\n  local_threshold: 0.8\nopenrouter:\n  enabled: false\n")
     c = settings.load(f)
-    assert c["policy"]["local_threshold"] == 0.8 and c["policy"]["hard_difficulty"] == 2.5
+    assert c["policy"]["local_threshold"] == 0.8 and c["policy"]["fallback_threshold"] == 0.3
     assert c["openrouter"]["enabled"] is False
+
+
+# -- routing modes -----------------------------------------------------------
+
+def test_sessions_start_in_auto_and_switch_independently(router):
+    router.test["state"]["verdict"] = verdict(0.1, 2.9)
+    assert call(router.set_mode, session="s1")["mode"] == "auto"
+    assert call(router.set_mode, session="s1", mode="local")["mode"] == "local"
+    d = call(router.route, session="s1", brief="hard task")
+    assert d["rung"] == "coder" and d["chain"] == ["coder"] and d["mode"] == "local"
+    assert call(router.route, session="s2", brief="hard task")["rung"] == "claude"
+    assert call(router.status, session="s1")["mode"] == "local"
+    assert call(router.status, session="s2")["mode"] == "auto"
+
+
+def test_forced_decisions_still_record_the_verdict_and_the_mode(router):
+    call(router.set_mode, session="s1", mode="local")
+    d = call(router.route, session="s1", brief="task")
+    row = router.ledger.decision(d["decision_id"])
+    assert row["mode"] == "local" and json.loads(row["verdict"])["p_local"] == 0.9
+
+
+def test_claude_mode_hands_back_while_locked_out(router):
+    call(router.set_mode, session="s1", mode="claude")
+    router.test["mode"].write_text("limit")
+    r = call(router.escalate, session="s1", brief="task", workdir=router.test["proj"])
+    assert r["chain"] == [] and "tell the user" in r["next"]
+    d = call(router.route, session="s1", brief="task")
+    assert d["rung"] == "user" and d["chain"] == [] and "stop" in d["next"]
+
+
+def test_unknown_mode_is_refused(router):
+    assert "mode must be one of" in call(router.set_mode, session="s1", mode="cheap")["error"]
