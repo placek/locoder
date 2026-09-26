@@ -25,7 +25,8 @@ claude:
   bin: claude
   max_turns: 15
   timeout_s: 1800
-  allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
+  # mcp__graft: the project's graft MCP server, which `claude -p` loads from .mcp.json.
+  allowed_tools: [Read, Edit, Write, Bash, Grep, Glob, mcp__graft]
   workdir_roots: [/srv/data/projects]
   # When your Max weekly window resets (0 = Monday .. 6 = Sunday, local time).
   # Check it in Claude Code with /usage. Results are grouped by this week.
@@ -38,6 +39,14 @@ claude:
   # next task after that tries again and re-locks if the limit still holds.
   limit_fallback_s: 3600
   result_chars: 8000
+
+# Graft: the first time a task is routed in a git checkout under claude.workdir_roots
+# that has no graft wiring, route() runs `graft init` + `graft build` at its root and
+# commits only graft's files. Skipped when those files have uncommitted changes.
+graft:
+  enabled: true
+  bin: graft
+  timeout_s: 300
 
 # The last resort: a one-shot run of this Hermes profile on an OpenRouter model,
 # via the `openrouter` custom provider in config.yaml (OPENROUTER_API_KEY in .env).

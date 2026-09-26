@@ -67,9 +67,18 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   `--usage-file` reports the cost. The run is the worker, not an orchestrator:
   its toolsets leave out `delegate_task`, `clarify` and the routing tools, its
   brief starts with a line saying so, and the routing plugin refuses inside it
-  (`LOCODER_ROUTING_CHILD`), so it cannot re-delegate or spend again. `delegate_task` cannot pick a model per task, which is why it is a
-  separate process rather than a child. Without a TTY, Hermes refuses a model
+  (`LOCODER_ROUTING_CHILD`), so it cannot re-delegate or spend again.
+  `delegate_task` cannot pick a model per task, which is why it is a separate
+  process rather than a child. Without a TTY, Hermes refuses a model
   priced over $20/M input or $100/M output, so pick a cheap one.
+- **Every project gets [graft](https://github.com/trailhq/graft).** The first
+  time a task is routed in a project, `route()` wires graft into it and
+  commits that: a section in `AGENTS.md` that points Hermes (orchestrator,
+  coder, OpenRouter run) at the `graft` CLI in the sandbox, and a `.mcp.json`
+  server, hooks and skill that give Claude Code graft's MCP tools. Agents then
+  query a code graph (`graft map`, `ask`, `callers`, `skeleton`, `grep`)
+  instead of re-exploring the repo on every task. See
+  [use graft in your projects](#use-graft-in-your-projects).
 - **Every decision and attempt lands in the ledger** (SQLite, in the Hermes
   home), and `make report` reads it back against the goals above.
 
@@ -85,7 +94,7 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
 | `skills/` | the house method; see the [skill index](#skill-index) | symlinked as the profile's skills root |
 | `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
 | `plugins/web/defuddle/` | clean page extraction + `web_research` | symlinked plugins dir |
-| `sandbox/Dockerfile` | the container every agent `terminal()` call runs in | image `locoder-sandbox:local` |
+| `sandbox/Dockerfile` | the container every agent `terminal()` call runs in, with the pinned graft | image `locoder-sandbox:local` |
 | `bin/locoder.in` | the `locoder` wrapper: pinned Hermes + this home + its `.env` | `~/.local/bin/locoder` |
 | `scripts/` | install, bump, check, report, bakeoff | — |
 | `tests/` | routing plugin, report and bake-off tests (no Hermes needed) | — |
@@ -110,8 +119,9 @@ users.users.placek.extraGroups = [ "docker" ];
 ```
 
 and in your user environment: `uv` (recent — 0.8.x cannot parse Hermes'
-lockfile; tested with 0.12.19), `git`, `npm`, `make`, `curl`, and the `claude`
-CLI logged in to your Max plan. The Hermes venv must end up on a Python 3.14
+lockfile; tested with 0.12.19), `git`, `npm` (Node 20 or newer: graft is installed
+with it, and its tree-sitter prebuilt binaries rely on `nix-ld`), `make`, `curl`,
+and the `claude` CLI logged in to your Max plan. The Hermes venv must end up on a Python 3.14
 *release*: on 3.14.0rc2 Hermes cannot build its OpenAI client (see
 [troubleshooting](#troubleshooting)).
 
@@ -175,6 +185,46 @@ skill, which you can also start with `/delegate`. What to expect:
    starts from a clean tree.
 4. If the whole chain fails, the task comes back to you with what each rung
    did, the failing output and the stash names.
+
+### Use graft in your projects
+
+Nothing to do: the first delegated task in a project wires it. `route()` runs,
+at the repository root,
+
+```sh
+graft init --no-global --no-statusline --no-build --agents agents claude
+graft build
+```
+
+and commits only the files graft wrote, as "Wire in graft": the fenced section
+in `AGENTS.md`, `.mcp.json`, `.claude/settings.json` (hooks), `.claude/helpers/`,
+`.claude/skills/graft/`, and the `.gitignore` / `.ignore` entries for `graft/`.
+The graph itself, `graft/`, is a local cache and stays out of git; every graft
+query refreshes it from the working tree, so there is nothing to rebuild by
+hand. `route()`'s output says what happened under `graft`.
+
+It only wires git checkouts under `claude.workdir_roots`, and it skips (and
+says why) when a file graft would write has uncommitted changes or a merge or
+rebase is in progress; commit or stash those and the next task wires it. Your
+other staged or unstaged work is never part of the wiring commit. If `init`,
+`build` or the commit fails, graft's changes are rolled back and that repo is
+not tried again until Hermes restarts.
+
+- **Who uses it how.** Hermes reads the `AGENTS.md` chain when a session
+  starts, so delegated runs (coder, OpenRouter) follow graft's section at once;
+  the orchestrator session that triggered the wiring picks it up next session.
+  Claude Code loads `.mcp.json`, the hooks and the skill on its own in `-p`
+  runs; `mcp__graft` in `claude.allowed_tools` lets it call the tools.
+- **Wire a project by hand** (e.g. one you only work on outside the harness):
+  run the two commands above in its root with `locoder`'s PATH, or in the
+  sandbox, and commit what they wrote.
+- **Turn it off:** `graft.enabled: false` in `profile/routing.yaml`. To unwire
+  a project, `graft uninstall -y --no-global` in it and commit.
+- **No telemetry:** the `locoder` wrapper and the sandbox set `DO_NOT_TRACK=1`,
+  so graft sends no usage pings. Its daily npm version check still runs.
+- **The LLM layer is not used:** `graft build --deep` (concept nodes and
+  per-symbol summaries) needs a provider key and is left off; the structural
+  graph is free and deterministic.
 
 ### Force Claude Code or local for a session
 
@@ -297,13 +347,19 @@ A new skill goes in `skills/<name>/SKILL.md` with `name` matching the
 directory; add it to the [skill index](#skill-index). `AGENTS.md` covers the
 discovery traps.
 
-### Update Hermes or the llama.cpp image
+### Update Hermes, graft or the llama.cpp image
 
 ```sh
 make bump                # Hermes to origin/main; kept only if `make check` passes, else rolled back
 make bump REV=<sha>      # a specific commit; commit hermes.rev afterwards
 make pin-llama           # re-resolve the llama.cpp image tag to a new digest; commit llama/image.lock
 ```
+
+Graft is pinned by `GRAFT_VERSION` in the `Makefile`, once for both places it
+runs: change it, `make install` (reinstalls it on the host and rebuilds the
+sandbox image), then `make check`, which fails if either copy differs from the
+pin. Hermes (sandbox) and Claude Code (host) share each project's `graft/`
+cache, so they should run the same version.
 
 Use `make bump`, not `hermes update`: the checkout is detached at the pinned
 commit, and `bump` re-runs the plugin checks against the new build before
@@ -318,6 +374,7 @@ smoke test above.
 
 ```
 make install        build/link everything (idempotent); after editing presets.ini it restarts the router
+make graft          install the pinned graft on the host (part of install)
 make enable|disable start/stop the router now and at login
 make restart        after `make install` regenerated the unit (new GPU_ARGS, MODELS, image)
 make status         router state and served presets
@@ -340,7 +397,7 @@ All register in the `coding` toolset, so they stay visible under
 
 | tool | arguments | what it does |
 |---|---|---|
-| `route` | `brief`, `workdir` | asks the judge, checks Claude Code's lockout and the session mode; returns `decision_id`, `rung`, `chain`, `reason`. A rung listed twice is its one retry; `rung: user` means nothing may run now |
+| `route` | `brief`, `workdir` | wires graft into the project if needed, asks the judge, checks Claude Code's lockout and the session mode; returns `decision_id`, `rung`, `chain`, `reason`, and `graft` (wired, already, skipped or failed, with the reason). A rung listed twice is its one retry; `rung: user` means nothing may run now |
 | `escalate` | `brief`, `workdir`, `decision_id`, `backend` (`auto`/`claude`/`openrouter`), `max_turns` | runs a paid rung and records the attempt; on a limit hit returns `claude_unavailable_until` and the rest of the `chain`, minus rungs the task already failed. Honours the session's mode |
 | `route_outcome` | `decision_id`, `rung`, `verified`, `notes` | labels an attempt after the orchestrator ran the acceptance check |
 | `routing_status` | — | the session's mode, Claude Code's lockout, this week's results per rung |
@@ -362,11 +419,14 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | `claude.bin` | `claude` | the Claude Code CLI |
 | `claude.max_turns` | 15 | `--max-turns` per run |
 | `claude.timeout_s` | 1800 | per run |
-| `claude.allowed_tools` | Read, Edit, Write, Bash, Grep, Glob | `--allowedTools` |
+| `claude.allowed_tools` | Read, Edit, Write, Bash, Grep, Glob, mcp__graft | `--allowedTools`; `mcp__graft` allows every tool of the project's graft MCP server |
 | `claude.workdir_roots` | `/srv/data/projects` | `escalate()` refuses workdirs elsewhere |
 | `claude.week` | Monday 09:00, Europe/Warsaw | when the Max week resets; groups weekly results |
 | `claude.limit_fallback_s` | 3600 | lockout when a limit error names no readable reset |
 | `claude.result_chars` | 8000 | how much of a run's final report comes back |
+| `graft.enabled` | true | wire graft into a project on its first routed task |
+| `graft.bin` | `graft` | the host graft (the wrapper puts the pinned one on PATH) |
+| `graft.timeout_s` | 300 | per `graft init` / `graft build` |
 | `openrouter.enabled` | true | off: the coder is all that is left while Claude Code is locked out |
 | `openrouter.hermes_bin` | `locoder` | what runs the one-shot Hermes run |
 | `openrouter.provider` | `custom:openrouter` | the profile's provider entry (bare `openrouter` is Hermes' built-in) |
@@ -429,6 +489,10 @@ Invoke any of them as `/<name>`.
 | every task starts on Claude Code and the reason says "judge unavailable" | the judge preset is down or `judge.gguf` is missing; `make status`, `make check` |
 | Claude Code is skipped although its limit has reset | the lockout came from the fallback or a misread reset; see [handle a Claude Code limit](#handle-a-claude-code-limit) |
 | a skill does not show up in `locoder skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |
+| `route()` says `graft: skipped — uncommitted changes in files graft writes` | commit or stash those files (`AGENTS.md`, `.mcp.json`, `.gitignore`, `.claude/…`); the next routed task wires the repo |
+| `route()` says `graft: failed` | the reason names the step (`init`, `build`, or the commit, e.g. a pre-commit hook); fix it and restart Hermes, or wire by hand |
+| `make check` fails on `graft (host)` or `graft (sandbox)` | a copy is missing or not at `GRAFT_VERSION`; `make install` |
+| Claude Code never calls graft's tools | the project is not wired (no `.mcp.json`), or `mcp__graft` is missing from `claude.allowed_tools` |
 
 ## Known limits
 
@@ -447,6 +511,9 @@ Invoke any of them as `/<name>`.
 - The routing mode is held in memory by the plugin, keyed by the
   conversation's root session (so compression keeps it): restarting Hermes
   resets every session to `auto`.
+- Graft's wiring reaches the orchestrator's own system prompt only from its
+  next session (Hermes reads `AGENTS.md` at session start); delegated runs see
+  it at once.
 - The coder serves one slot, so `delegation.max_concurrent_children` is 1:
   fan-out skills (`code-review`, `research`) run their children in sequence.
 

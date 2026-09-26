@@ -5,6 +5,11 @@
 # `plugins list`, `skills list`) is plain hermes, just aimed at this profile.
 export HERMES_HOME="@HERMES_HOME@"
 export HERMES_DEFUDDLE_BIN="@PREFIX@/tools/defuddle/node_modules/.bin/defuddle"
+# The pinned graft: route() wires projects with it, and with it on PATH `graft init`
+# writes `.mcp.json` as `graft mcp`, so Claude Code runs this version too.
+export PATH="@PREFIX@/tools/graft/node_modules/.bin:$PATH"
+# Graft (and anything else that honours it) sends no usage telemetry.
+export DO_NOT_TRACK=1
 # escalate() starts child processes (claude, a one-shot locoder run) that read
 # keys such as OPENROUTER_API_KEY from their environment, so the profile's .env
 # must be in the environment, not only read by Hermes.
