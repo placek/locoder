@@ -2,14 +2,14 @@ model:
   default: orchestrator
   provider: llama-router
   base_url: http://127.0.0.1:8088/v1
-  context_length: 65536
+  # MUST equal the orchestrator preset's ctx-size in llama/presets.ini (make test).
+  context_length: 131072
 
 custom_providers:
   - name: llama-router
     base_url: http://127.0.0.1:8088/v1
     model: orchestrator
     models:
-      coder: {}
       orchestrator: {}
     models_discovered: true
   - name: openrouter
@@ -541,7 +541,7 @@ agent:
     - "Read before you patch. Match the surrounding code's idiom, naming, and comment density rather than importing your own style."
     - "Minimal diffs. Solve the stated problem; no speculative abstractions or drive-by refactors unless asked."
     - "Handing work to a fresh agent -> /to-agent (writes the handoff doc). Reporting to a person -> /to-report. The skill is named to-agent because Hermes owns the built-in /handoff command."
-    - "IMPLEMENTATION GOES THROUGH /delegate. Surgical edits of a few lines you make yourself; anything bigger, write the brief (goal, files or seam, the exact acceptance command, 'touch nothing else'), call route(brief) once, and start where it says: Claude Code via escalate() by default, the local coder subagent when the judge is near-certain or Claude Code is locked out, OpenRouter last. If an attempt fails its acceptance check, move to the next rung in the chain route() returned; after the last, report back to the user. Never pick the rung by feel, and never call claude from the terminal: escalate() is the only path, because it records Claude Code's limit hits; when one hits mid-run, continue with the chain escalate() returns."
+    - "IMPLEMENTATION GOES THROUGH /delegate. Surgical edits of a few lines you make yourself; anything bigger, write the brief (goal, files or seam, the exact acceptance command, 'touch nothing else'), call route(brief) once, and start where it says: Claude Code via escalate() by default, the local coder (a delegate_task child on your own model) when the judge is near-certain or Claude Code is locked out, OpenRouter last. If an attempt fails its acceptance check, move to the next rung in the chain route() returned; after the last, report back to the user. Never pick the rung by feel, and never call claude from the terminal: escalate() is the only path, because it records Claude Code's limit hits; when one hits mid-run, continue with the chain escalate() returns."
     - "After EVERY delegated attempt, run the acceptance check yourself and call route_outcome(decision_id, rung, verified). The report that comes back is a claim, not evidence; /verify still applies. Unrecorded outcomes are lost training data for the routing."
     - "Keep the outer loop yourself. You decide the plan, the tickets, and the gates; the coder or Claude Code executes a bounded slice. Never hand either of them /ship, an unscoped 'make it work', or the decision about whether something is done."
     - "Research is available and keyless: web_search finds sources, web_extract reads the page. Use /research for anything non-trivial (it runs in the background and writes a cited file). Never answer a factual or API question from memory when a primary source is one search away, and cite what you actually read rather than the search snippet."
@@ -550,7 +550,7 @@ agent:
 
   # Forced true, NOT "auto". "auto" substring-matches the model NAME against
   # ("gpt","codex","grok","deepseek","kimi","qwen","glm",...) — the models here
-  # are named "coder"/"orchestrator", which match nothing, so "auto" would
+  # are named "orchestrator"/"judge", which match nothing, so "auto" would
   # silently leave both blocks OFF. Local models need this discipline most:
   # tool persistence, tools instead of prose, read-back after writes,
   # count reconciliation, literal identifiers, verification-gated completion.
@@ -581,15 +581,18 @@ agent:
   gateway_notify_interval: 180
 
 delegation:
-  model: coder
+  # The `coder` rung: children run on the orchestrator's own model, the
+  # strongest local one, in its single slot while the parent waits. The llama.cpp
+  # prompt cache (cache-ram in the preset) keeps the parent's KV in RAM meanwhile.
+  model: orchestrator
   provider: llama-router
   base_url: http://127.0.0.1:8088/v1
   max_spawn_depth: 2
   orchestrator_enabled: true
-  # MUST equal the coder preset's `parallel` in llama/presets.ini (1). Children
-  # beyond the server's slot count do not run in parallel: they queue, and each
-  # one's request evicts the others' KV cache from the single slot, so every
-  # turn re-reads its whole context. 3 here was slower than 1, not faster.
+  # MUST equal that preset's `parallel` in llama/presets.ini (1; make test checks).
+  # Children beyond the server's slot count do not run in parallel: they queue,
+  # and each one's request evicts the others' KV cache from the single slot, so
+  # every turn re-reads its whole context. 3 here was slower than 1, not faster.
   max_concurrent_children: 1
   max_summary_chars: 16000
   max_iterations: 60
@@ -630,7 +633,7 @@ skills:
   # delegate is the other: it is the only path to the coder and the paid rungs,
   # and a recall miss means work silently done by feel instead of by route().
   # Keep this list tiny — the full skills/ tree is ~107 KB (~27k tokens) against
-  # a 65k context, so everything else stays description-only until loaded.
+  # a 128k context, so everything else stays description-only until loaded.
   auto_load:
     - verify
     - delegate

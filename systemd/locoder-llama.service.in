@@ -1,5 +1,5 @@
 [Unit]
-Description=locoder: llama.cpp router (orchestrator, coder, judge)
+Description=locoder: llama.cpp router (orchestrator, judge)
 Documentation=file://@REPO@/README.md
 
 [Service]
@@ -19,11 +19,11 @@ ExecStart=@DOCKER@ run --rm --name locoder-llama \
     @IMAGE@ \
     --host 0.0.0.0 --port 8080 \
     --models-preset /etc/locoder/presets.ini \
-    --models-max 3
+    --models-max 2
 ExecStop=@DOCKER@ stop --time 60 locoder-llama
 Restart=on-failure
 RestartSec=10
-# First start pages ~96 GB of weights in through mmap.
+# First start pages ~73 GB of weights in through mmap.
 TimeoutStartSec=600
 
 [Install]

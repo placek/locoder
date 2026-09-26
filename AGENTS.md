@@ -19,14 +19,19 @@ So a broken `SKILL.md`, `plugin.yaml` or plugin module breaks the agent editing
 it. After touching any of them:
 
 ```sh
-make test           # routing plugin, report and bake-off unit tests
+make test           # routing plugin, report, bake-off and stack-consistency tests
 make check-offline  # plugins load in the pinned Hermes, tools visible, profile wired
 ```
 
-Two couplings a change must keep in step:
+Couplings a change must keep in step:
 
-- `delegation.max_concurrent_children` in `profile/config.yaml` equals the
-  coder's `parallel` in `llama/presets.ini` (`make check` enforces it).
+- `llama/presets.ini`, `profile/config.yaml` and `profile/routing.yaml` agree
+  on the context size, slot count, judge preset, KV cache types and `--fit`
+  placement, and the judge's `WORKER` text describes the model
+  `delegation.model` names. `scripts/stack.py` holds the rules; `make test`
+  runs them on the repo, `make check` on the install. A mismatch there fails
+  only at runtime, often silently, so fix what they report rather than
+  loosening a rule.
 - Plugin tools register into the `coding` toolset. Under
   `agent.coding_context: focus` Hermes collapses tools to that toolset, so a
   tool registered anywhere else silently vanishes.

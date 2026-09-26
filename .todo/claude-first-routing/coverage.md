@@ -104,3 +104,15 @@ Checked against the pinned Hermes (`7b761da`) installed in a scratch container:
    - `CLAUDE_CONFIG_DIR` was still stripped from the Max rung.
    - `limit_hits.spent` is still recorded: it is Claude Code spend at the hit, not a budget, so it stays.
 8. **Docs and tests:** the `delegate` skill's mode text and the README's limit and mode sections are updated, and the missing assertions have been added.
+
+## 09 · One local model (added after the audit)
+
+| criterion | evidence |
+|---|---|
+| no coder preset; delegation on the orchestrator; children = slots | `test_the_repo_itself_is_consistent`, `test_delegation_must_name_a_preset_with_as_many_slots_as_children` |
+| context_length = ctx-size, ≥ Hermes' minimum | `test_context_length_must_match_the_orchestrator_ctx_size`, `test_context_below_hermes_minimum_is_refused` |
+| `--fit` not switched off; matching KV types; judge on its own CPU preset | `test_hand_placed_layers_would_switch_fit_off`, `test_mixed_kv_cache_types_under_flash_attention_are_refused`, `test_the_judge_must_be_a_separate_cpu_preset`; on `main`'s old files the rules report the `[*]` and `[coder]` layer counts |
+| WORKER matches the worker | `test_the_judge_describes_the_worker_it_is_asked_about` |
+| ignored keys and wrong slot context caught live | `test_keys_the_router_did_not_echo_were_ignored`; `check_llama` run against a fake router answering as llama.cpp's source does |
+| `make check-offline` | profile and plugin sections pass on the pinned Hermes |
+| startup, KV size, `--fit` placement, a delegated child | **Live** |

@@ -18,9 +18,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import stack  # scripts/stack.py: the settings that must agree across presets, config and routing
+
 REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status", "routing_mode"},
                     "web/defuddle": {"web_research"}}
-PRESETS = {"orchestrator", "coder", "judge"}
 
 failures: list[str] = []
 
@@ -83,28 +84,24 @@ def check_profile() -> None:
     from hermes_yaml import safe_load
 
     cfg = safe_load((home / "config.yaml").read_text())
-    children = cfg.get("delegation", {}).get("max_concurrent_children")
-    presets = Path(os.environ.get("LOCODER_PRESETS", "")).read_text() if os.environ.get("LOCODER_PRESETS") else ""
-    coder_parallel = _preset_value(presets, "coder", "parallel")
-    if coder_parallel is not None and str(children) != coder_parallel:
-        fail(f"delegation.max_concurrent_children={children} but coder parallel={coder_parallel}: they must match")
-    elif coder_parallel is not None:
-        ok(f"delegation concurrency matches coder slots ({children})")
+    routing = safe_load((home / "routing.yaml").read_text()) if (home / "routing.yaml").is_file() else {}
+    sys.path.insert(0, str(home / "plugins" / "locoder"))
+    from routing.judge import WORKER
+
+    found = stack.problems(_presets(), cfg, routing or {}, WORKER)
+    for msg in found:
+        fail(msg)
+    if not found:
+        ok("presets, config.yaml and routing.yaml agree (context, slots, judge, KV types, --fit, WORKER)")
     if not (home / "skills" / "delegate" / "SKILL.md").is_file():
         fail("skills/delegate/SKILL.md not found through the skills link")
 
 
-def _preset_value(ini: str, section: str, key: str):
-    current = None
-    for raw in ini.splitlines():
-        line = raw.split(";", 1)[0].split("#", 1)[0].strip()
-        if line.startswith("[") and line.endswith("]"):
-            current = line[1:-1].strip()
-        elif current == section and "=" in line:
-            k, v = (s.strip() for s in line.split("=", 1))
-            if k == key:
-                return v
-    return None
+def _presets() -> stack.Presets:
+    path = os.environ.get("LOCODER_PRESETS")
+    if not path:
+        sys.exit("LOCODER_PRESETS is not set: run this through make check")
+    return stack.parse(Path(path).read_text())
 
 
 def check_tools() -> None:
@@ -169,15 +166,34 @@ def check_llama() -> None:
 
     cfg = settings.load()
     base = cfg["llama"]["base_url"].rstrip("/")
+    presets = _presets()
+    wanted = set(stack.models(presets))
     try:
         with urllib.request.urlopen(base + "/models", timeout=10) as resp:
-            ids = {m.get("id") for m in json.loads(resp.read()).get("data", [])}
+            served = {m.get("id"): m for m in json.loads(resp.read()).get("data", [])}
     except OSError as exc:
         fail(f"{base}/models unreachable ({exc}); is locoder-llama.service running?")
         return
-    missing = PRESETS - ids
-    (fail if missing else ok)(f"presets served: {sorted(ids & PRESETS)}" + (f", missing {sorted(missing)}" if missing else ""))
-    if "judge" in missing:
+    missing = wanted - served.keys()
+    (fail if missing else ok)(f"presets served: {sorted(wanted & served.keys())}"
+                              + (f", missing {sorted(missing)}" if missing else ""))
+    for name in sorted(wanted & served.keys()):
+        status = served[name].get("status") or {}
+        state = status.get("value")
+        if status.get("failed"):
+            fail(f"{name}: failed to load (exit code {status.get('exit_code')}): make logs shows why")
+        elif state == "loading":
+            warn(f"{name}: still loading; run make check again when it is up")
+        elif state not in (None, "loaded", "sleeping"):
+            fail(f"{name}: {state}, though every preset loads on startup: make logs shows why")
+        if "preset" in status:
+            ignored = stack.ignored_keys(stack.effective(presets, name), status["preset"])
+            (fail if ignored else ok)(f"{name}: " + (f"the router ignored {ignored} (a typo, an option this "
+                                                    "llama.cpp lacks, or an alias: use the long form)"
+                                                    if ignored else "every preset key was accepted"))
+    _check_context(base)
+    _check_vram()
+    if cfg["llama"]["judge_model"] in missing:
         return
     try:
         v = Judge(SemIfBackend(base, cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"])).judge(
@@ -193,6 +209,41 @@ def check_llama() -> None:
         warn(line + " — it doubts the coder on a one-word typo fix; its scale may need other thresholds")
     else:
         ok(line)
+
+
+def _check_context(base: str) -> None:
+    """The context the orchestrator really got, against the one Hermes will fill."""
+    from hermes_yaml import safe_load
+
+    config = safe_load((Path(os.environ["HERMES_HOME"]) / "config.yaml").read_text())
+    name, want = config["model"]["default"], int(config["model"]["context_length"])
+    root = base[:-3] if base.endswith("/v1") else base
+    try:
+        with urllib.request.urlopen(f"{root}/props?model={name}", timeout=30) as resp:
+            got = json.loads(resp.read()).get("default_generation_settings", {}).get("n_ctx")
+    except OSError as exc:
+        fail(f"{name}: /props unreachable ({exc})")
+        return
+    (ok if got == want else fail)(f"{name}: slot context {got}, config.yaml context_length {want}")
+
+
+def _check_vram() -> None:
+    """--fit keeps fit-target MiB free at load; much less now means something else took it."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        warn("nvidia-smi not on PATH: VRAM headroom not checked")
+        return
+    out = subprocess.run([smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, timeout=30)
+    try:
+        used, total = (int(x) for x in out.stdout.splitlines()[0].split(","))
+    except (ValueError, IndexError):
+        warn(f"nvidia-smi gave no memory reading: {out.stderr.strip()[:200]}")
+        return
+    free = total - used
+    line = f"VRAM: {used} of {total} MiB used, {free} free"
+    (warn if free < 1024 else ok)(line + (" — under 1 GiB: a desktop spike can OOM the orchestrator" if free < 1024
+                                          else ""))
 
 
 def main() -> int:

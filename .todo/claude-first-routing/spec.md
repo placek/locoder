@@ -25,7 +25,7 @@ to OpenRouter (not local) when Claude Code is ahead of pace or out.
 | 9 | Claude Code fails the acceptance check | Retry once on Claude Code with the failing output, then hand back to the user. |
 | 10 | OpenRouter step | A Hermes child on a cheaper non-Anthropic model, not `claude -p`. |
 | 11 | Choosing that model | A bake-off replaying real past delegated tasks on 2–3 candidates. |
-| 12 | Local coder | Unchanged (fast, small-active MoE). Its pass rate as a fallback is tracked separately; revisit with the orchestrator's model as a heavier fallback if it is poor. |
+| 12 | Local coder | Revised by ticket 09: the separate small coder is gone. The `coder` rung is a `delegate_task` child on the orchestrator's own model (Laguna S 2.1), chosen for results over speed. Its pass rate as a fallback is still tracked separately. |
 | 13 | Routing modes | Three: `auto` (the judged chains below), `claude` (Claude Code only), `local` (the coder only). |
 | 14 | Mode scope | Per Hermes session: every session starts in `auto`; a switch lasts until that session ends. |
 | 15 | Forced modes on failure | `claude`: Claude Code out means the task comes back to the user with the reset time; a verification failure still gets the one retry. `local`: a coder verification failure comes straight back to the user, no retry. Neither ever falls to another rung. |
