@@ -1,4 +1,4 @@
-"""SQLite ledger: every routing decision, every attempt, every weekly-limit hit.
+"""SQLite ledger: every routing decision, every attempt, every Claude Code limit hit.
 
 The attempts table is the training set. A coder attempt that passed /verify is a positive
 label for "local can do this"; one that failed is a negative. After a few weeks this is what
@@ -11,7 +11,6 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from statistics import median
 from typing import Any, Dict, List, Optional
 
 SCHEMA = """
@@ -23,7 +22,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     rung TEXT NOT NULL,
     reason TEXT NOT NULL,
     verdict TEXT,            -- JSON from judge.verdict_dict, NULL when the judge was down
-    pace TEXT                -- JSON snapshot of the pacer
+    claude TEXT              -- JSON: Claude Code's availability when the decision was made
 );
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,16 +57,26 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._add_missing_columns("decisions", {"claude": "TEXT"})
+
+    def _add_missing_columns(self, table: str, columns: Dict[str, str]) -> None:
+        """Bring a ledger written by an older version up to the current schema, keeping its rows."""
+        have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+        with self.db:
+            for name, sql_type in columns.items():
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
     # -- writes -------------------------------------------------------------
     def add_decision(self, brief: str, workdir: Optional[str], rung: str, reason: str,
-                     verdict: Optional[dict], pace: Optional[dict]) -> str:
+                     verdict: Optional[dict], claude: Optional[dict]) -> str:
         decision_id = uuid.uuid4().hex[:12]
         with self.db:
             self.db.execute(
-                "INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO decisions (id, ts, brief, workdir, rung, reason, verdict, claude)"
+                " VALUES (?,?,?,?,?,?,?,?)",
                 (decision_id, time.time(), brief, workdir, rung, reason,
-                 json.dumps(verdict) if verdict else None, json.dumps(pace) if pace else None),
+                 json.dumps(verdict) if verdict else None, json.dumps(claude) if claude else None),
             )
         return decision_id
 
@@ -120,14 +129,6 @@ class Ledger:
     def exhausted_until(self, now: float) -> Optional[float]:
         row = self.db.execute("SELECT MAX(until) FROM limit_hits WHERE until>?", (now,)).fetchone()
         return float(row[0]) if row and row[0] else None
-
-    def observed_budget(self, last: int = 4) -> Optional[float]:
-        """Median spend at the last few limit hits: the empirical size of the weekly limit."""
-        rows = self.db.execute(
-            "SELECT spent FROM limit_hits WHERE spent>0 ORDER BY ts DESC LIMIT ?", (last,)
-        ).fetchall()
-        values = [float(r[0]) for r in rows]
-        return median(values) if values else None
 
     def stats(self, since: float) -> Dict[str, Any]:
         rows = self.db.execute(

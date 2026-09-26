@@ -20,11 +20,13 @@ _BRIEF = {
 ROUTE_SCHEMA = {
     "name": "route",
     "description": (
-        "Decide where a delegated coding task should START: the local coder subagent, Claude Code, "
-        "or Claude Code on OpenRouter. Asks the local judge model how hard the task is and whether the "
-        "local coder can finish it, and checks the weekly Claude Code pace. Call it once per delegated "
-        "task, before delegating, with the brief you are about to hand over. Returns a decision_id "
-        "(pass it to escalate and route_outcome), the starting rung, and the fallback chain."
+        "Decide where a delegated coding task should START and where it goes if that fails. Claude "
+        "Code is the default; the local coder goes first only when the local judge model is near-certain "
+        "it will finish, or when a limit has Claude Code locked out; OpenRouter is the last resort. Call "
+        "it once per delegated task, before delegating, with the brief you are about to hand over. "
+        "Returns a decision_id (pass it to escalate and route_outcome), the starting rung, and the "
+        "chain: follow it in order, a rung listed twice is its one retry, and after the last the task "
+        "goes back to the user."
     ),
     "parameters": {
         "type": "object",
@@ -40,8 +42,9 @@ ESCALATE_SCHEMA = {
     "name": "escalate",
     "description": (
         "Run a task on a paid rung: Claude Code (Max subscription) or Claude Code on OpenRouter. "
-        "backend='auto' picks by weekly pace and switches to OpenRouter by itself if the Max limit "
-        "hits mid-run. Blocks until the run ends; returns its final report, cost and turn count. The "
+        "backend='auto' picks Claude Code while it is available, else OpenRouter, and switches to "
+        "OpenRouter by itself if a Max limit hits mid-run. Blocks until the run ends; returns its "
+        "final report, cost and turn count. The "
         "report is a claim: run the acceptance check yourself afterwards."
     ),
     "parameters": {
@@ -78,7 +81,7 @@ OUTCOME_SCHEMA = {
 
 STATUS_SCHEMA = {
     "name": "routing_status",
-    "description": "Weekly Claude Code pace (spent vs. budget vs. time elapsed, limit state) and this week's results per rung.",
+    "description": "Whether Claude Code is available or locked out by a limit (and until when), and this week's results per rung.",
     "parameters": {"type": "object", "properties": {}},
 }
 
@@ -120,12 +123,12 @@ class Router:
             verdict = self._judge_factory(cfg).judge(brief)
         except JudgeError as exc:
             judge_error = str(exc)
-        p = policy.pace(self.ledger, self.clock(), cfg)
-        d = policy.decide(verdict, p, cfg, judge_error)
-        vd, pd = verdict_dict(verdict), p.as_dict()
-        decision_id = self.ledger.add_decision(brief, args.get("workdir"), d.rung, d.reason, vd, pd)
+        claude = policy.claude_state(self.ledger, self.clock())
+        d = policy.decide(verdict, claude, cfg, judge_error)
+        vd, cd = verdict_dict(verdict), claude.as_dict()
+        decision_id = self.ledger.add_decision(brief, args.get("workdir"), d.rung, d.reason, vd, cd)
         return _json({"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
-                      "judge": vd, "pace": _pace_summary(pd)})
+                      "judge": vd, "claude": cd})
 
     # -- escalate -------------------------------------------------------------
     async def escalate(self, args: Dict[str, Any], **_: Any) -> str:
@@ -142,10 +145,9 @@ class Router:
         if requested not in ("auto", "claude", "openrouter"):
             return _error(f"unknown backend {requested!r}")
 
-        p = policy.pace(self.ledger, self.clock(), cfg)
+        now = self.clock()
         if requested == "auto":
-            expected = self._expected_difficulty(decision_id)
-            rung, why = policy.paid_rung(p, expected, cfg)
+            rung, why = policy.paid_rung(policy.claude_state(self.ledger, now), cfg)
         else:
             rung, why = requested, "requested explicitly"
 
@@ -162,23 +164,15 @@ class Router:
             runs.append(result.as_dict(int(cfg["claude"]["result_chars"])))
             if not (result.limit_hit and rung == "claude"):
                 break
-            # The Max window ran out mid-week: remember until when, and learn the budget from it.
-            self.ledger.add_limit_hit(p.window_start, self.ledger.claude_spent(p.window_start), p.window_end)
+            week_start, week_end = policy.week_bounds(now, cfg)
+            self.ledger.add_limit_hit(week_start, self.ledger.claude_spent(week_start), week_end)
             if requested != "auto" or not cfg["openrouter"]["enabled"]:
                 break
-            rung, why = "openrouter", "Claude Code hit its weekly limit mid-run; retried on OpenRouter"
+            rung, why = "openrouter", "Claude Code hit a limit mid-run; retried on OpenRouter"
 
         return _json({"decision_id": decision_id, "backend": runs[-1]["rung"], "why": why,
                       "ok": bool(runs[-1].get("ok")), "runs": runs,
                       "next": "Run the acceptance check yourself, then call route_outcome."})
-
-    def _expected_difficulty(self, decision_id: Optional[str]) -> Optional[float]:
-        if not decision_id:
-            return None
-        row = self.ledger.decision(decision_id)
-        if row is None or not row["verdict"]:
-            return None
-        return json.loads(row["verdict"]).get("expected_difficulty")
 
     # -- outcome & status -----------------------------------------------------
     def outcome(self, args: Dict[str, Any], **_: Any) -> str:
@@ -194,13 +188,10 @@ class Router:
 
     def status(self, args: Dict[str, Any], **_: Any) -> str:
         cfg = self._load()
-        p = policy.pace(self.ledger, self.clock(), cfg)
-        return _json({"pace": _pace_summary(p.as_dict()), "this_week": self.ledger.stats(p.window_start)})
-
-
-def _pace_summary(pd: dict) -> dict:
-    keys = ("spent", "allowance", "budget", "budget_source", "elapsed", "ahead", "exhausted", "exhausted_until")
-    return {k: pd[k] for k in keys}
+        now = self.clock()
+        week_start, _ = policy.week_bounds(now, cfg)
+        return _json({"claude": policy.claude_state(self.ledger, now).as_dict(),
+                      "this_week": self.ledger.stats(week_start)})
 
 
 def register(ctx, router: Optional[Router] = None) -> Router:
@@ -214,5 +205,5 @@ def register(ctx, router: Optional[Router] = None) -> Router:
     ctx.register_tool(name="route_outcome", toolset="coding", schema=OUTCOME_SCHEMA, handler=router.outcome,
                       description="Label a delegated attempt as verified or not.", emoji="🏷️")
     ctx.register_tool(name="routing_status", toolset="coding", schema=STATUS_SCHEMA, handler=router.status,
-                      description="Weekly Claude Code pace and per-rung results.", emoji="📊")
+                      description="Claude Code availability and per-rung results.", emoji="📊")
     return router

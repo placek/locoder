@@ -18,15 +18,12 @@ DEFAULTS: Dict[str, Any] = {
         "timeout_s": 30,
     },
     "policy": {
-        # Start on the local coder only when the judge thinks it can finish AND the task is not hard.
-        "local_threshold": 0.6,
-        "local_max_difficulty": 1.5,
-        # At or above this expected difficulty (0-3 scale) Claude Code is used even when ahead of pace.
-        "hard_difficulty": 2.5,
-        # Share of the weekly budget usable ahead of the linear schedule.
-        "pace_slack": 0.10,
-        # Judge unreachable or unsure: start local, the cascade escalates if it fails.
-        "fail_open_rung": "coder",
+        # Claude Code is the default. The local coder goes first only when the judge is near-certain:
+        # P(local finishes) at least this AND expected difficulty (0-3 scale) at most that.
+        "local_threshold": 0.85,
+        "local_max_difficulty": 0.5,
+        # While Claude Code is locked out: the coder is tried before OpenRouter at or above this P.
+        "fallback_threshold": 0.3,
     },
     "claude": {
         "bin": "claude",
@@ -35,10 +32,8 @@ DEFAULTS: Dict[str, Any] = {
         "allowed_tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
         # escalate() refuses any workdir outside these roots.
         "workdir_roots": ["/srv/data/projects"],
+        # When the Max week resets; results are grouped by this window.
         "week": {"reset_weekday": 0, "reset_hour": 9, "timezone": "Europe/Warsaw"},
-        # Cost units per week before the Max limit hits. Only a first guess: every limit hit
-        # records what had been spent, and the median of those replaces this number.
-        "weekly_budget": 300.0,
         "result_chars": 8000,
     },
     "openrouter": {

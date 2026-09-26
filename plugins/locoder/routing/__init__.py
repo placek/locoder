@@ -1,4 +1,4 @@
-"""locoder routing: judge + weekly pacer + paid rungs + ledger, as four Hermes tools."""
+"""locoder routing: judge + Claude-first policy + paid rungs + ledger, as four Hermes tools."""
 from __future__ import annotations
 
 from .tools import register as _register

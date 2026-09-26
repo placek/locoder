@@ -94,7 +94,7 @@ def test_judge_unreachable_raises_judge_error():
         Judge("http://127.0.0.1:9/v1", "judge", timeout_s=1).judge("x")
 
 
-# -- pacing & policy ---------------------------------------------------------
+# -- policy ------------------------------------------------------------------
 
 def test_window_starts_at_last_reset():
     start, end = policy.window_bounds(at(2026, 9, 26), 0, 9, TZ)  # Saturday
@@ -111,46 +111,82 @@ def verdict(p_local, expected):
     return Verdict(p_local=p_local, difficulty={}, expected_difficulty=expected, coverage=1.0)
 
 
-def pace_obj(spent=0.0, elapsed=0.5, budget=100.0, exhausted_until=None):
-    return policy.Pace(0, 0, elapsed, spent, budget, "configured", budget * min(1, elapsed + 0.1), exhausted_until)
+AVAILABLE = policy.ClaudeState(unavailable_until=None)
+LOCKED_OUT = policy.ClaudeState(unavailable_until=at(2026, 9, 28, 9))
 
 
-def test_easy_task_starts_on_coder_with_paid_chain():
-    d = policy.decide(verdict(0.9, 0.8), pace_obj(), cfg())
-    assert d.rung == "coder" and d.chain == ["coder", "claude", "openrouter"]
+def test_near_certain_task_starts_on_coder_then_claude_with_one_retry():
+    d = policy.decide(verdict(0.9, 0.3), AVAILABLE, cfg())
+    assert d.rung == "coder" and d.chain == ["coder", "claude", "claude"]
 
 
-def test_hard_task_skips_coder_when_on_pace():
-    d = policy.decide(verdict(0.3, 2.2), pace_obj(spent=10), cfg())
+def test_merely_likely_task_starts_on_claude():
+    d = policy.decide(verdict(0.7, 0.3), AVAILABLE, cfg())
+    assert d.rung == "claude" and d.chain == ["claude", "claude"]
+
+
+def test_confident_judge_but_not_trivial_task_starts_on_claude():
+    d = policy.decide(verdict(0.9, 0.8), AVAILABLE, cfg())
     assert d.rung == "claude"
 
 
-def test_ahead_of_pace_sends_medium_task_to_openrouter():
-    d = policy.decide(verdict(0.3, 2.0), pace_obj(spent=90, elapsed=0.4), cfg())
-    assert d.rung == "openrouter" and d.chain == ["openrouter", "claude"]
+def test_locked_out_with_fair_chance_tries_coder_then_openrouter():
+    d = policy.decide(verdict(0.4, 2.0), LOCKED_OUT, cfg())
+    assert d.rung == "coder" and d.chain == ["coder", "openrouter"]
+    assert "unavailable until Mon 28 Sep 09:00" in d.reason
 
 
-def test_ahead_of_pace_still_spends_claude_on_very_hard_task():
-    d = policy.decide(verdict(0.1, 2.8), pace_obj(spent=90, elapsed=0.4), cfg())
-    assert d.rung == "claude"
-
-
-def test_exhausted_goes_to_openrouter_and_drops_claude_from_chain():
-    d = policy.decide(verdict(0.1, 2.8), pace_obj(exhausted_until=1e12), cfg())
+def test_locked_out_and_unlikely_goes_straight_to_openrouter():
+    d = policy.decide(verdict(0.2, 2.8), LOCKED_OUT, cfg())
     assert d.rung == "openrouter" and d.chain == ["openrouter"]
 
 
-def test_judge_down_fails_open_to_coder():
-    d = policy.decide(None, pace_obj(), cfg(), judge_error="connection refused")
-    assert d.rung == "coder" and "connection refused" in d.reason
+def test_locked_out_without_openrouter_leaves_only_the_coder():
+    d = policy.decide(verdict(0.1, 2.8), LOCKED_OUT, cfg(openrouter={"enabled": False}))
+    assert d.rung == "coder" and d.chain == ["coder"]
 
 
-def test_observed_budget_replaces_configured(tmp_path):
+def test_judge_down_starts_on_claude():
+    d = policy.decide(None, AVAILABLE, cfg(), judge_error="connection refused")
+    assert d.rung == "claude" and "connection refused" in d.reason
+
+
+def test_judge_down_while_locked_out_is_treated_as_pessimistic():
+    d = policy.decide(None, LOCKED_OUT, cfg(), judge_error="connection refused")
+    assert d.rung == "openrouter"
+
+
+def test_thresholds_come_from_config():
+    c = cfg(policy={"local_threshold": 0.6, "local_max_difficulty": 1.5, "fallback_threshold": 0.5})
+    assert policy.decide(verdict(0.7, 1.2), AVAILABLE, c).rung == "coder"
+    assert policy.decide(verdict(0.4, 2.0), LOCKED_OUT, c).rung == "openrouter"
+
+
+def test_paid_rung_is_claude_until_locked_out():
+    assert policy.paid_rung(AVAILABLE, cfg())[0] == "claude"
+    assert policy.paid_rung(LOCKED_OUT, cfg())[0] == "openrouter"
+
+
+def test_limit_hit_makes_claude_unavailable_until_it_lapses(tmp_path):
     led = Ledger(tmp_path / "l.db")
-    for spent in (80, 100, 120):
-        led.add_limit_hit(0, spent, 0)
-    p = policy.pace(led, at(2026, 9, 24), cfg())
-    assert p.budget == 100 and p.budget_source == "observed"
+    led.add_limit_hit(0, 0, at(2026, 9, 28, 9))
+    assert not policy.claude_state(led, at(2026, 9, 26)).available
+    assert policy.claude_state(led, at(2026, 9, 28, 10)).available
+
+
+def test_old_ledger_gains_claude_column_and_keeps_rows(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(str(path))
+    old.execute("CREATE TABLE decisions (id TEXT PRIMARY KEY, ts REAL NOT NULL, brief TEXT NOT NULL, workdir TEXT,"
+                " rung TEXT NOT NULL, reason TEXT NOT NULL, verdict TEXT, pace TEXT)")
+    old.execute("INSERT INTO decisions VALUES ('a', 1, 'b', NULL, 'coder', 'r', NULL, '{}')")
+    old.commit()
+    old.close()
+    led = Ledger(path)
+    new_id = led.add_decision("brief", None, "claude", "why", None, {"available": True})
+    assert led.decision("a")["rung"] == "coder"
+    assert json.loads(led.decision(new_id)["claude"]) == {"available": True}
 
 
 # -- backends ----------------------------------------------------------------
@@ -266,13 +302,19 @@ def test_limit_hit_mid_run_falls_back_to_openrouter_and_blocks_claude(router):
     assert r["backend"] == "openrouter" and r["ok"]
     router.test["state"]["verdict"] = verdict(0.1, 2.9)
     assert call(router.route, brief="another hard task")["rung"] == "openrouter"
-    assert call(router.status)["pace"]["exhausted"] is True
+    assert call(router.status)["claude"]["available"] is False
 
 
 def test_route_with_judge_down_still_decides(router):
     router.test["state"]["verdict"] = None
     d = call(router.route, brief="anything")
-    assert d["rung"] == "coder" and d["judge"] is None
+    assert d["rung"] == "claude" and d["judge"] is None
+
+
+def test_route_records_claude_availability_on_the_decision(router):
+    d = call(router.route, brief="small fix")
+    assert d["claude"]["available"] is True
+    assert json.loads(router.ledger.decision(d["decision_id"])["claude"])["available"] is True
 
 
 def test_escalate_rejects_workdir_outside_roots(router):
@@ -295,5 +337,5 @@ def test_settings_merge_routing_yaml(tmp_path):
     f = tmp_path / "routing.yaml"
     f.write_text("policy:\n  local_threshold: 0.8\nopenrouter:\n  enabled: false\n")
     c = settings.load(f)
-    assert c["policy"]["local_threshold"] == 0.8 and c["policy"]["hard_difficulty"] == 2.5
+    assert c["policy"]["local_threshold"] == 0.8 and c["policy"]["fallback_threshold"] == 0.3
     assert c["openrouter"]["enabled"] is False

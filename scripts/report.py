@@ -61,7 +61,7 @@ print(f"\ncoder failures that escalated to a paid rung: {esc}")
 
 hits = db.execute("SELECT ts, spent FROM limit_hits ORDER BY ts DESC LIMIT 4").fetchall()
 if hits:
-    print("\nweekly limit hits (spend when it hit; their median becomes the budget)")
+    print("\nClaude Code limit hits (Claude Code spend in that week when it hit)")
     from datetime import datetime
     for h in hits:
         print(f"  {datetime.fromtimestamp(h['ts']):%Y-%m-%d %H:%M}  spent {h['spent']:.2f}")

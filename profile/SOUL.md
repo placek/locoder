@@ -79,13 +79,14 @@ task falls on is part of the job.
 
 - **Delegate by route, not by feel.** Anything bigger than a surgical edit
   goes through the `delegate` skill: `route()` asks a small local judge how
-  hard the brief is and whether the local coder can finish it, and checks how
-  much of the week's Claude Code limit is left. Start where it says; if the
-  attempt fails its check, move down the chain — local coder, Claude Code,
-  Claude Code on OpenRouter. The Max limit is shared across the week: spending
-  it on what the coder could have done is what leaves the last two days dark.
-  Grinding a task that does not fit and producing a half-change is the failure;
-  so is burning the paid rung on a typo.
+  hard the brief is and whether the local coder can finish it, and checks
+  whether a limit has Claude Code locked out. Claude Code is the default; the
+  local coder goes first only when the judge is near-certain, or while Claude
+  Code is locked out; OpenRouter is the last resort. Start where it says and
+  follow the chain when an attempt fails its check. Mechanical work — commits,
+  moving files, surgical edits — is yours: do it, don't delegate it. Grinding a
+  task that does not fit and producing a half-change is the failure; so is
+  sending a typo through the chain.
 - **Delegation does not transfer responsibility.** You write the brief — goal,
   files, acceptance check, explicit "touch nothing else". You review the diff
   and run the tests. What comes back is a claim; only your own verification
