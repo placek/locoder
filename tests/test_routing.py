@@ -261,21 +261,29 @@ def test_parse_success_reads_cost_and_turns():
 
 
 def test_subscription_env_strips_api_billing_vars():
-    env = backends.environment(cfg(), "claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin"})
+    env = backends.environment("claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin"})
     assert "ANTHROPIC_API_KEY" not in env and env["PATH"] == "/bin"
 
 
-def test_openrouter_env_points_claude_code_at_gateway(tmp_path):
-    c = cfg(openrouter={"config_dir": str(tmp_path / "cc")})
-    env = backends.environment(c, "openrouter", {"OPENROUTER_API_KEY": "or-key"})
-    assert env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "or-key" and env["ANTHROPIC_API_KEY"] == ""
-    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cc")
+def test_openrouter_command_runs_this_profile_one_shot(tmp_path):
+    cmd = backends.command(cfg(), "openrouter", "do it", usage_file=tmp_path / "u.json", workdir=tmp_path)
+    assert cmd == ["locoder", "-z", "do it", "-m", "deepseek/deepseek-v4.1-flash",
+                   "--provider", "custom:openrouter", "--in", str(tmp_path),
+                   "--usage-file", str(tmp_path / "u.json"), "-t", "coding"]
+    assert "claude" not in cmd
 
 
-def test_openrouter_without_key_is_refused():
-    with pytest.raises(backends.BackendError):
-        backends.environment(cfg(), "openrouter", {})
+def test_openrouter_env_keeps_the_profile_env():
+    env = backends.environment("openrouter", {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"})
+    assert env == {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"}
+
+
+def test_parse_oneshot_reads_usage_and_exit_code():
+    usage = {"estimated_cost_usd": 0.12, "cost_status": "estimated", "api_calls": 5, "session_id": "s"}
+    r = backends.parse_oneshot("all done\n", "", 0, 3.0, usage)
+    assert r.ok and r.cost == 0.12 and r.turns == 5 and r.result == "all done" and r.cost_status == "estimated"
+    failed = backends.parse_oneshot("", "boom", 2, 3.0, None)
+    assert not failed.ok and failed.cost == 0.0 and failed.result == "boom" and not failed.limit_hit
 
 
 def test_workdir_outside_roots_is_refused(tmp_path):
@@ -289,17 +297,27 @@ def test_workdir_outside_roots_is_refused(tmp_path):
 
 FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys
-if os.environ.get("ANTHROPIC_BASE_URL"):
-    print(json.dumps({"is_error": False, "result": "done via openrouter", "total_cost_usd": 0.4, "num_turns": 3}))
-else:
-    mode = open(os.environ["FAKE_CLAUDE_MODE"]).read().strip()
-    if mode == "limit":
-        print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
-        sys.exit(1)
-    if mode == "limit-no-reset":
-        print(json.dumps({"is_error": True, "result": "Usage limit reached."}))
-        sys.exit(1)
-    print(json.dumps({"is_error": False, "result": "done via max", "total_cost_usd": 2.5, "num_turns": 9}))
+mode = open(os.environ["FAKE_CLAUDE_MODE"]).read().strip()
+if mode == "limit":
+    print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
+    sys.exit(1)
+if mode == "limit-no-reset":
+    print(json.dumps({"is_error": True, "result": "Usage limit reached."}))
+    sys.exit(1)
+print(json.dumps({"is_error": False, "result": "done via max", "total_cost_usd": 2.5, "num_turns": 9}))
+"""
+
+
+FAKE_HERMES = """#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+usage = argv[argv.index("--usage-file") + 1]
+open(os.environ["FAKE_HERMES_ARGV"], "w").write(json.dumps(argv))
+fail = open(os.environ["FAKE_HERMES_MODE"]).read().strip() == "fail"
+json.dump({"estimated_cost_usd": 0.4, "cost_status": "estimated", "api_calls": 3, "session_id": "h1",
+           "completed": not fail}, open(usage, "w"))
+print("gave up" if fail else "done via openrouter")
+sys.exit(2 if fail else 0)
 """
 
 
@@ -318,17 +336,24 @@ def router(tmp_path, monkeypatch):
     claude = tmp_path / "claude"
     claude.write_text(FAKE_CLAUDE)
     claude.chmod(claude.stat().st_mode | stat.S_IEXEC)
+    hermes = tmp_path / "locoder"
+    hermes.write_text(FAKE_HERMES)
+    hermes.chmod(hermes.stat().st_mode | stat.S_IEXEC)
     mode = tmp_path / "mode"
     mode.write_text("ok")
+    hermes_mode = tmp_path / "hermes-mode"
+    hermes_mode.write_text("ok")
     monkeypatch.setenv("FAKE_CLAUDE_MODE", str(mode))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("FAKE_HERMES_MODE", str(hermes_mode))
+    monkeypatch.setenv("FAKE_HERMES_ARGV", str(tmp_path / "hermes-argv"))
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
-            openrouter={"config_dir": str(tmp_path / "cc")})
+            openrouter={"hermes_bin": str(hermes)})
     state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24)}
     r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c)
-    r.test = {"mode": mode, "proj": str(tmp_path / "proj"), "state": state}
+    r.test = {"mode": mode, "hermes_mode": hermes_mode, "argv": tmp_path / "hermes-argv",
+              "proj": str(tmp_path / "proj"), "state": state}
     return r
 
 
@@ -436,6 +461,31 @@ def test_route_records_claude_availability_on_the_decision(router):
     d = call(router.route, brief="small fix")
     assert d["claude"]["available"] is True
     assert json.loads(router.ledger.decision(d["decision_id"])["claude"])["available"] is True
+
+
+def test_openrouter_rung_runs_hermes_one_shot_and_records_its_cost(router):
+    d = call(router.route, brief="task", workdir=router.test["proj"])
+    r = call(router.escalate, brief="task", workdir=router.test["proj"], decision_id=d["decision_id"],
+             backend="openrouter")
+    assert r["ok"] and r["backend"] == "openrouter" and r["run"]["result"] == "done via openrouter"
+    assert r["run"]["cost_status"] == "estimated"
+    argv = json.loads(router.test["argv"].read_text())
+    assert argv[:2] == ["-z", "task"] and argv[argv.index("--in") + 1] == router.test["proj"]
+    assert router.ledger.stats(0)["openrouter"]["cost"] == 0.4
+
+
+def test_failed_openrouter_run_still_records_its_cost(router):
+    router.test["hermes_mode"].write_text("fail")
+    r = call(router.escalate, brief="task", workdir=router.test["proj"], backend="openrouter")
+    assert not r["ok"] and r["run"]["result"] == "gave up"
+    assert router.ledger.stats(0)["openrouter"]["cost"] == 0.4
+
+
+def test_auto_goes_to_openrouter_while_claude_is_locked_out(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    r = call(router.escalate, brief="task", workdir=router.test["proj"])
+    assert r["backend"] == "openrouter" and r["ok"]
 
 
 def test_escalate_rejects_workdir_outside_roots(router):

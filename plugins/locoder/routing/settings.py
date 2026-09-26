@@ -41,11 +41,13 @@ DEFAULTS: Dict[str, Any] = {
     },
     "openrouter": {
         "enabled": True,
-        "api_key_env": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api",
-        "model": "anthropic/claude-fable-5.1",
-        # Separate Claude Code config dir: no cached Max login, so no auth conflict with the gateway key.
-        "config_dir": "~/.local/state/locoder/claude-openrouter",
+        # A one-shot run of this Hermes profile: `locoder` sets HERMES_HOME and loads the profile .env.
+        "hermes_bin": "locoder",
+        # `custom:` reaches the profile's custom_providers entry; bare `openrouter` is Hermes' built-in.
+        "provider": "custom:openrouter",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "toolsets": "coding",
+        "timeout_s": 1800,
     },
 }
 

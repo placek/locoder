@@ -27,8 +27,9 @@ Hermes TUI — for all of it.
             │                                   (after the last rung: back to you)
             ▼
    coder: delegate_task          claude: escalate()        openrouter: escalate()
-   (Qwen3.6-35B-A3B,             claude -p on the          the same claude -p,
-    local, free)                 Max plan                  pointed at OpenRouter
+   (Qwen3.6-35B-A3B,             claude -p on the          locoder -z: this Hermes
+    local, free)                 Max plan                  profile, one-shot, on a
+                                                           cheap OpenRouter model
             │
             ▼
    orchestrator runs the acceptance check itself ──► route_outcome(verified) ──► ledger
@@ -52,11 +53,13 @@ Hermes TUI — for all of it.
   the orchestrator the rest of that task's chain: the coder first when the
   judge gives it a fair chance, OpenRouter otherwise. After the reset, Claude
   Code is the default again.
-- **Both paid rungs are the same CLI.** OpenRouter serves an
-  Anthropic-compatible endpoint, so the OpenRouter rung is `claude -p` with
-  `ANTHROPIC_BASE_URL` pointed there (and its own `CLAUDE_CONFIG_DIR`, so the
-  cached Max login never collides with the gateway key). Same brief, same JSON
-  result, same usage accounting. Blackout days use the same model family.
+- **OpenRouter runs inside Hermes.** The OpenRouter rung is a one-shot run of
+  this same profile (`locoder -z <brief> -m <model> --provider
+  custom:openrouter --in <workdir> -t coding`) on a cheaper model: Hermes stays
+  the harness, its commands go to the sandbox, and `--usage-file` reports the
+  cost. `delegate_task` cannot pick a model per task, which is why it is a
+  separate process rather than a child. Without a TTY, Hermes refuses a model
+  priced over $20/M input or $100/M output, so pick a cheap one.
 
 ## Layout
 

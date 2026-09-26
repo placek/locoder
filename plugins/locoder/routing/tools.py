@@ -42,7 +42,8 @@ ROUTE_SCHEMA = {
 ESCALATE_SCHEMA = {
     "name": "escalate",
     "description": (
-        "Run a task on a paid rung: Claude Code (Max subscription) or Claude Code on OpenRouter. "
+        "Run a task on a paid rung: Claude Code (Max subscription), or a one-shot run of this Hermes "
+        "profile on a cheaper OpenRouter model. "
         "backend='auto' picks Claude Code while it is available, else OpenRouter. Blocks until the run "
         "ends; returns its final report, cost and turn count. The report is a claim: run the acceptance "
         "check yourself afterwards. If a Max limit hits mid-run, the result says until when Claude Code "

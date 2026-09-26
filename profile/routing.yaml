@@ -39,10 +39,15 @@ claude:
   limit_fallback_s: 3600
   result_chars: 8000
 
+# The last resort: a one-shot run of this Hermes profile on an OpenRouter model,
+# via the `openrouter` custom provider in config.yaml (OPENROUTER_API_KEY in .env).
 openrouter:
   enabled: true
-  api_key_env: OPENROUTER_API_KEY
-  base_url: https://openrouter.ai/api
-  # Same model family as Max, so a blackout day behaves like any other day.
-  model: anthropic/claude-fable-5.1
-  config_dir: ~/.local/state/locoder/claude-openrouter
+  hermes_bin: locoder
+  provider: custom:openrouter
+  # A placeholder until the bake-off picks one. Use a concrete model id: Hermes
+  # prices runs from OpenRouter's model list, and an unlisted id costs "unknown".
+  # Without a TTY, Hermes refuses models over $20/M input or $100/M output.
+  model: deepseek/deepseek-v4.1-flash
+  toolsets: coding
+  timeout_s: 1800

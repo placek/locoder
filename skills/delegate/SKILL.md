@@ -13,7 +13,7 @@ Claude Code is the default. The local coder goes first only when the judge is ne
 |---|---|---|
 | `coder` | `delegate_task` (the delegation default is the local `coder` model) | time only |
 | `claude` | `escalate(backend="claude")` — Claude Code on the Max plan | Max limits |
-| `openrouter` | `escalate(backend="openrouter")` — same CLI, same model family, pay-per-token | money |
+| `openrouter` | `escalate(backend="openrouter")` — a one-shot run of this Hermes profile on a cheaper OpenRouter model | money |
 
 ## 1. Write the brief
 

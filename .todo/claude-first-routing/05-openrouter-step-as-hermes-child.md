@@ -1,6 +1,6 @@
 # 05: Run the OpenRouter step as a Hermes child
 
-Status: ready-for-agent
+Status: implemented (verify on alpha with ticket 04's smoke run)
 Blocked by: 01, 04
 
 ## What to build
@@ -23,6 +23,8 @@ flow and "both paid rungs are the same CLI" section, and `make check`'s wording.
 ## Acceptance criteria
 
 - [ ] A task routed to `openrouter` runs as a Hermes child on the configured model, with its commands in the sandbox.
-- [ ] The attempt's cost from OpenRouter is recorded in the ledger.
-- [ ] Nothing launches `claude` against OpenRouter any more.
-- [ ] `make test` and `make check-offline` pass.
+  (Command, exit codes and usage file are covered by tests against a fake `locoder`; the
+  sandbox part needs the live run on alpha.)
+- [x] The attempt's cost from OpenRouter is recorded in the ledger.
+- [x] Nothing launches `claude` against OpenRouter any more.
+- [ ] `make test` and `make check-offline` pass. (`make test` passes; `make check-offline` on alpha.)
