@@ -11,6 +11,8 @@
 #   make tui            open the agent
 #   make bump [REV=…]   move Hermes to a new revision, keep it only if `check` passes
 #   make report         what the ledger says about the routing goals, the rungs and the judge
+#   make bakeoff MODELS=a,b [TASKS=10]   replay recent tasks on candidate OpenRouter models
+#   make test           unit tests (no Hermes needed)
 
 SHELL := bash
 .SHELLFLAGS := -euo pipefail -c
