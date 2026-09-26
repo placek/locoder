@@ -143,7 +143,7 @@ make install        after editing presets.ini: restarts the router if running
 make bump           Hermes to origin/main; kept only if `make check` passes, else rolled back
 make bump REV=<sha> a specific commit; commit hermes.rev afterwards
 make pin-llama      re-resolve the llama.cpp image tag to a new digest; commit llama/image.lock
-make report         judge calibration and per-rung results from the ledger
+make report         days without Claude Code, pass rates, coder as fallback, OpenRouter spend, judge calibration
 make test           the routing plugin's unit tests
 ```
 

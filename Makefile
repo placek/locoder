@@ -10,7 +10,7 @@
 #   make check          prove the installed stack is wired (plugins, tools, router, judge)
 #   make tui            open the agent
 #   make bump [REV=…]   move Hermes to a new revision, keep it only if `check` passes
-#   make report         what the ledger says about the judge and the rungs
+#   make report         what the ledger says about the routing goals, the rungs and the judge
 
 SHELL := bash
 .SHELLFLAGS := -euo pipefail -c
