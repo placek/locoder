@@ -26,6 +26,9 @@ to OpenRouter (not local) when Claude Code is ahead of pace or out.
 | 10 | OpenRouter step | A Hermes child on a cheaper non-Anthropic model, not `claude -p`. |
 | 11 | Choosing that model | A bake-off replaying real past delegated tasks on 2–3 candidates. |
 | 12 | Local coder | Unchanged (fast, small-active MoE). Its pass rate as a fallback is tracked separately; revisit with the orchestrator's model as a heavier fallback if it is poor. |
+| 13 | Routing modes | Three: `auto` (the judged chains below), `claude` (Claude Code only), `local` (the coder only). |
+| 14 | Mode scope | Per Hermes session: every session starts in `auto`; a switch lasts until that session ends. |
+| 15 | Forced modes on failure | `claude`: Claude Code out means the task comes back to the user with the reset time; a verification failure still gets the one retry. `local`: a coder verification failure comes straight back to the user, no retry. Neither ever falls to another rung. |
 
 ## The chain
 
@@ -41,6 +44,16 @@ For a delegated task, `route()` returns one of:
 
 A limit hit mid-run switches the rest of the task to the "Claude Code out" rows.
 Thresholds are starting values in `routing.yaml`, tuned later from `make report`.
+
+That table is `auto` mode. The forced modes ignore the judge's verdict (it is still
+asked and recorded, since forced-local attempts on tasks it rated hard are exactly
+the calibration data `auto` never produces):
+
+| mode | situation | chain |
+|---|---|---|
+| `claude` | Claude Code available | claude → claude (retry) → user |
+| `claude` | Claude Code out (or hits a limit mid-run) | user, told when it resets |
+| `local` | any | coder → user |
 
 ## Open facts
 
