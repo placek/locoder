@@ -84,3 +84,10 @@ interactive CLI and TUI (`cli.py:1522-1525`, `tui_gateway/server.py:1925-1926`).
 hello.txt containing hi" in a scratch git repo. Confirm exit 0, the file, a non-zero
 `estimated_cost_usd` in the usage file, and that the file was written from inside
 the sandbox container. Tick the first criterion then.
+
+**Partial check in a cloud container** (pinned Hermes, no OpenRouter key): the exact command
+above was accepted by the CLI; the run failed before any API call (exit 1) and still wrote
+the usage file with every field null plus `failed: true` and `failure`, which the rung
+parses. The failure itself was the container's uv picking Python 3.14.0rc2, which Hermes'
+OpenAI client setup trips on (`_eval_type() got an unexpected keyword argument
+'prefer_fwd_module'`); check that alpha's venv is on a 3.14 release, not an rc.

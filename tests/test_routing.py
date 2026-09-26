@@ -286,6 +286,14 @@ def test_parse_oneshot_reads_usage_and_exit_code():
     assert not failed.ok and failed.cost == 0.0 and failed.result == "boom" and not failed.limit_hit
 
 
+def test_parse_oneshot_reads_a_real_failed_usage_file():
+    # What the pinned Hermes wrote when its client failed to start: every field null.
+    usage = {k: None for k in ("estimated_cost_usd", "cost_status", "api_calls", "session_id", "completed")}
+    usage.update(failed=True, failure="Failed to initialize OpenAI client")
+    r = backends.parse_oneshot("", "hermes -z: agent failed: Failed to initialize OpenAI client", 1, 2.0, usage)
+    assert not r.ok and r.cost == 0.0 and r.turns is None and "agent failed" in r.result
+
+
 def test_workdir_outside_roots_is_refused(tmp_path):
     (tmp_path / "ok").mkdir()
     assert backends.check_workdir(str(tmp_path / "ok"), [str(tmp_path)])

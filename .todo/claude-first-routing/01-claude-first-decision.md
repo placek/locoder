@@ -35,3 +35,6 @@ removed).
 - [x] Thresholds (0.85, 0.5, 0.3) are `routing.yaml` settings, applied on the next tool call.
 - [ ] `make test` and `make check-offline` pass. (`make test` passes; `make check-offline` needs the
   pinned Hermes install and has not been run yet: run it on alpha before merging.)
+  Verified in a cloud container with the pinned Hermes installed: the profile and plugin
+  checks of `make check-offline` pass (all five routing tools loaded and in the `coding`
+  toolset); its two failures there, defuddle and the sandbox image, are that container's.

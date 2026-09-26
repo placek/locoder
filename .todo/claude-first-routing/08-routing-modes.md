@@ -40,4 +40,9 @@ loading `writing-for-agents`. The `delegate` skill explains the modes.
 - [x] Forced-mode decisions still store the judge's verdict and record the mode.
 - [x] `routing_status` shows the current mode.
 - [ ] `make test` and `make check-offline` pass; the new skill appears in `skills list`. (`make test` passes;
-  `make check-offline` and `skills list` need the pinned Hermes: run them on alpha.)
+  `skills list` shows `routing-mode` enabled; see below for `make check-offline`.)
+  Verified in a cloud container with the pinned Hermes installed: the profile and plugin
+  checks of `make check-offline` pass (all five routing tools loaded and in the `coding`
+  toolset); its two failures there, defuddle and the sandbox image, are that container's.
+  Dispatched through Hermes' own tool registry, `routing_mode` set in session s1 showed
+  `local` there and `auto` in session s2: `session_id` reaches the handlers as expected.

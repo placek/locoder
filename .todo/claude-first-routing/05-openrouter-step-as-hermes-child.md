@@ -28,3 +28,6 @@ flow and "both paid rungs are the same CLI" section, and `make check`'s wording.
 - [x] The attempt's cost from OpenRouter is recorded in the ledger.
 - [x] Nothing launches `claude` against OpenRouter any more.
 - [ ] `make test` and `make check-offline` pass. (`make test` passes; `make check-offline` on alpha.)
+  Verified in a cloud container with the pinned Hermes installed: the profile and plugin
+  checks of `make check-offline` pass (all five routing tools loaded and in the `coding`
+  toolset); its two failures there, defuddle and the sandbox image, are that container's.
