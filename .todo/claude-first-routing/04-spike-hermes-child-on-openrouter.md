@@ -91,3 +91,9 @@ the usage file with every field null plus `failed: true` and `failure`, which th
 parses. The failure itself was the container's uv picking Python 3.14.0rc2, which Hermes'
 OpenAI client setup trips on (`_eval_type() got an unexpected keyword argument
 'prefer_fwd_module'`); check that alpha's venv is on a 3.14 release, not an rc.
+
+**Revised after the coverage audit:** `-t coding` includes `delegate_task` (and, once the
+plugin loads, the routing tools), and a one-shot run still reads `SOUL.md` and the
+auto-loaded `delegate` skill, so the child could re-delegate or escalate. The rung now
+passes `-t file,terminal,web,todo`, prefixes the brief with a worker preamble, and sets
+`LOCODER_ROUTING_CHILD=1`, which makes the routing plugin refuse inside the child.

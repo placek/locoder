@@ -668,7 +668,8 @@ plugins:
     # profile's plugins/ dir). Pinned as web.extract_backend below.
     - web/defuddle
     # Local user plugin (plugins/locoder/routing/): route, escalate,
-    # route_outcome, routing_status. Settings live in routing.yaml beside this file.
+    # route_outcome, routing_status, routing_mode. Settings live in routing.yaml
+    # beside this file.
     - locoder/routing
     # Keyless search, one more member of the rescue ring. Possible now that
     # Hermes lives in a uv venv (`make install` adds the ddgs extra); the old

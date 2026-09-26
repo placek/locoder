@@ -62,9 +62,12 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   Code is the default again.
 - **OpenRouter runs inside Hermes.** The OpenRouter rung is a one-shot run of
   this same profile (`locoder -z <brief> -m <model> --provider
-  custom:openrouter --in <workdir> -t coding`) on a cheaper model: Hermes stays
-  the harness, its commands go to the sandbox, and `--usage-file` reports the
-  cost. `delegate_task` cannot pick a model per task, which is why it is a
+  custom:openrouter --in <workdir> -t file,terminal,web,todo`) on a cheaper
+  model: Hermes stays the harness, its commands go to the sandbox, and
+  `--usage-file` reports the cost. The run is the worker, not an orchestrator:
+  its toolsets leave out `delegate_task`, `clarify` and the routing tools, its
+  brief starts with a line saying so, and the routing plugin refuses inside it
+  (`LOCODER_ROUTING_CHILD`), so it cannot re-delegate or spend again. `delegate_task` cannot pick a model per task, which is why it is a
   separate process rather than a child. Without a TTY, Hermes refuses a model
   priced over $20/M input or $100/M output, so pick a cheap one.
 - **Every decision and attempt lands in the ledger** (SQLite, in the Hermes
@@ -182,9 +185,10 @@ skill, which you can also start with `/delegate`. What to expect:
 /routing-mode            show the current mode
 ```
 
-The mode lasts until the session ends; every new session starts in `auto`. In
-`claude` mode, while Claude Code is locked out, tasks come back to you with the
-reset time instead of running anywhere else. The judge is still asked in the
+The mode lasts until the session ends, context compression included; every new
+session starts in `auto`. In `claude` mode, while Claude Code is locked out,
+tasks come back to you with the reset time instead of running anywhere else,
+and `escalate()` refuses OpenRouter; in `local` mode it refuses both paid rungs. The judge is still asked in the
 forced modes and its verdict recorded: forced-local runs on tasks it rated hard
 are calibration data `auto` never produces.
 
@@ -197,8 +201,9 @@ attempts, passes, failures and cost per rung.
 ### Handle a Claude Code limit
 
 Nothing to do in the moment: the run that hit the limit hands the rest of the
-task to the coder or OpenRouter, and Claude Code is skipped until the reset its
-error stated. Afterwards, check that the reset was read:
+task to the coder or OpenRouter (skipping any rung that task already failed),
+and Claude Code is skipped until the reset its error stated. In `claude` mode
+the task comes back to you with the reset time instead. Afterwards, check that the reset was read:
 
 ```sh
 sqlite3 ~/.local/state/locoder/home/routing/ledger.db \
@@ -270,12 +275,13 @@ In a scratch git repo under `/srv/data/projects`:
 
 ```sh
 locoder -z "Create hello.txt containing the word hi" -m deepseek/deepseek-v4.1-flash \
-  --provider custom:openrouter --in "$PWD" --usage-file /tmp/usage.json -t coding; echo "exit=$?"
+  --provider custom:openrouter --in "$PWD" --usage-file /tmp/usage.json -t file,terminal,web,todo; echo "exit=$?"
 cat hello.txt /tmp/usage.json
 ```
 
-Expect exit 0, `hello.txt`, and a non-zero `estimated_cost_usd`. This is exactly
-what `escalate(backend="openrouter")` runs.
+Expect exit 0, `hello.txt`, and a non-zero `estimated_cost_usd`. This is what
+`escalate(backend="openrouter")` runs, minus the worker preamble it puts in
+front of the brief and the `LOCODER_ROUTING_CHILD=1` it sets.
 
 ### Change a skill, plugin or the profile
 
@@ -335,7 +341,7 @@ All register in the `coding` toolset, so they stay visible under
 | tool | arguments | what it does |
 |---|---|---|
 | `route` | `brief`, `workdir` | asks the judge, checks Claude Code's lockout and the session mode; returns `decision_id`, `rung`, `chain`, `reason`. A rung listed twice is its one retry; `rung: user` means nothing may run now |
-| `escalate` | `brief`, `workdir`, `decision_id`, `backend` (`auto`/`claude`/`openrouter`), `max_turns` | runs a paid rung and records the attempt; on a limit hit returns `claude_unavailable_until` and the rest of the `chain` |
+| `escalate` | `brief`, `workdir`, `decision_id`, `backend` (`auto`/`claude`/`openrouter`), `max_turns` | runs a paid rung and records the attempt; on a limit hit returns `claude_unavailable_until` and the rest of the `chain`, minus rungs the task already failed. Honours the session's mode |
 | `route_outcome` | `decision_id`, `rung`, `verified`, `notes` | labels an attempt after the orchestrator ran the acceptance check |
 | `routing_status` | — | the session's mode, Claude Code's lockout, this week's results per rung |
 | `routing_mode` | `mode` (optional) | sets or shows the session's routing mode |
@@ -365,7 +371,7 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | `openrouter.hermes_bin` | `locoder` | what runs the one-shot Hermes run |
 | `openrouter.provider` | `custom:openrouter` | the profile's provider entry (bare `openrouter` is Hermes' built-in) |
 | `openrouter.model` | `deepseek/deepseek-v4.1-flash` | placeholder until a bake-off picks one |
-| `openrouter.toolsets` | `coding` | `-t` for the one-shot run |
+| `openrouter.toolsets` | `file,terminal,web,todo` | `-t` for the one-shot run: no `delegate_task`, `clarify` or routing tools |
 | `openrouter.timeout_s` | 1800 | per run |
 
 ### The ledger
@@ -438,7 +444,8 @@ Invoke any of them as `/<name>`.
   tool allow-list in `routing.yaml` and workdirs restricted to
   `claude.workdir_roots`. The local agent's own commands, and the OpenRouter
   rung's, run in the sandbox.
-- The routing mode is held in the plugin, per session: restarting Hermes
+- The routing mode is held in memory by the plugin, keyed by the
+  conversation's root session (so compression keeps it): restarting Hermes
   resets every session to `auto`.
 - The coder serves one slot, so `delegation.max_concurrent_children` is 1:
   fan-out skills (`code-review`, `research`) run their children in sequence.

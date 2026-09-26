@@ -133,6 +133,12 @@ class Ledger:
     def decision(self, decision_id: str) -> Optional[sqlite3.Row]:
         return self.db.execute("SELECT * FROM decisions WHERE id=?", (decision_id,)).fetchone()
 
+    def failed_rungs(self, decision_id: str) -> set:
+        """Rungs whose attempt at this decision failed its acceptance check."""
+        rows = self.db.execute("SELECT DISTINCT rung FROM attempts WHERE decision_id=? AND verified=0",
+                               (decision_id,)).fetchall()
+        return {r[0] for r in rows}
+
     def claude_spent(self, since: float) -> float:
         row = self.db.execute(
             "SELECT COALESCE(SUM(cost),0) FROM attempts WHERE rung='claude' AND ts>=?", (since,)

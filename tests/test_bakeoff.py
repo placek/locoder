@@ -44,6 +44,9 @@ def test_brief_parsing():
     assert bakeoff.acceptance_command("Acceptance: make test\n") == "make test"
     assert bakeoff.acceptance_command("Goal: x\n") is None
     assert bakeoff.allowed_paths(BRIEF) == ["done.txt"]
+    plain = "Constraints: touch nothing outside src/app.py, tests/ and docs/api.md; no refactors.\n"
+    assert bakeoff.allowed_paths(plain) == ["src/app.py", "tests", "docs/api.md"]
+    assert bakeoff.allowed_paths("Constraints: touch nothing outside src.\n") == ["src"]
     assert bakeoff.outside(["done.txt", "src/a.py"], ["done.txt"]) == ["src/a.py"]
     assert bakeoff.outside(["src/a.py"], ["src"]) == []
     assert bakeoff.outside(["anything"], []) == []
@@ -85,6 +88,8 @@ def test_bakeoff_scores_each_model_and_leaves_no_trace(world, capsys):
     table = {line.split()[0]: line.split()[1] for line in out.splitlines()
              if line.split() and line.split()[0] in ("good", "lazy", "sprawl") and "/" in line.split()[1]}
     assert table == {"good": "1/1", "lazy": "0/1", "sprawl": "0/1"}
+    good = next(line.split() for line in out.splitlines() if line.startswith("good ") and "/" in line)
+    assert good[2:4] == ["0.100", "0.100"] and good[4].endswith("s")   # total cost, cost per task, time
     assert "acceptance check failed" in out and "touched other.txt" in out
     assert hashlib.sha256(world["ledger"].read_bytes()).hexdigest() == before
     assert list(world["scratch"].iterdir()) == []
