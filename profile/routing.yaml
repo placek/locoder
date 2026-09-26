@@ -4,8 +4,8 @@
 
 llama:
   base_url: http://127.0.0.1:8088/v1
-  # The CPU-only preset in llama/presets.ini. Never point this at orchestrator
-  # or coder: both run one slot, and a judge query would evict their KV cache.
+  # The CPU-only preset in llama/presets.ini. Never point this at the
+  # orchestrator: it runs one slot, and a judge query would evict its KV cache.
   judge_model: judge
   timeout_s: 30
 
@@ -14,7 +14,9 @@ policy:
   # is near-certain: P(coder finishes) >= local_threshold AND expected
   # difficulty (0 trivial .. 3 heavy) <= local_max_difficulty. A wrong "coder"
   # costs minutes (the chain moves on to Claude Code); a wrong "claude" costs
-  # quota. Tune these from `make report` once the ledger has a few weeks in it.
+  # quota. The coder is the orchestrator's own model, stronger but slower than a
+  # small coder was; keep these strict until `make report` shows its pass rate.
+  # Tune them from the report once the ledger has a few weeks in it.
   local_threshold: 0.85
   local_max_difficulty: 0.5
   # While a limit has Claude Code locked out, the coder is tried before

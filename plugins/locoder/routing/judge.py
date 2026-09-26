@@ -12,7 +12,7 @@ A backend implements ``system_one(state, questions)``. The one here, ``SemIfBack
 SemIf trick on a small local model: each question becomes a prompt whose answer is a single
 token, requested with ``max_tokens=1`` and ``top_logprobs``, and the probability of each
 allowed token is read off. It runs on the ``judge`` preset of the llama.cpp router, CPU-only,
-so asking never evicts the orchestrator's or the coder's single KV slot. A Jev or CLM backend
+so asking never evicts the orchestrator's single KV slot. A Jev or CLM backend
 would be another class with the same method.
 
 Every answer carries *coverage*: the share of the model's probability mass that landed on an
@@ -169,9 +169,10 @@ class SemIfBackend:
 
 # -- the routing judge ----------------------------------------------------------------
 
-# Who the questions are about: the coder preset. Keep in step with llama/presets.ini.
-WORKER = ("a small local coding model (3B active parameters, 128k context, can read files, "
-          "edit, run tests, at most 60 steps, no human help)")
+# Who the questions are about: the model delegation.model names in profile/config.yaml, with
+# its ctx-size from llama/presets.ini and delegation.max_iterations (tests/test_stack.py checks both).
+WORKER = ("a local coding model (118B mixture-of-experts, 8B active parameters, 128k context, "
+          "slow on this machine; can read files, edit, run tests; at most 60 steps; no human help)")
 
 QUESTIONS: Dict[str, Question] = {
     "difficulty": Score(

@@ -33,9 +33,9 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
             │                                   (after the last rung: back to you)
             ▼
    coder: delegate_task          claude: escalate()        openrouter: escalate()
-   (Qwen3.6-35B-A3B,             claude -p on the          locoder -z: this Hermes
-    local, free)                 Max plan                  profile, one-shot, on a
-                                                           cheap OpenRouter model
+   (a child on the               claude -p on the          locoder -z: this Hermes
+    orchestrator's own           Max plan                  profile, one-shot, on a
+    model: local, free)                                    cheap OpenRouter model
             │
             ▼
    orchestrator runs the acceptance check itself ──► route_outcome(verified) ──► ledger
@@ -54,8 +54,8 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   a small local model: each question becomes a one-token prompt, sent with
   `max_tokens=1` and `top_logprobs`, and the probability of each allowed
   answer is read off. It runs as its own CPU-only preset because the
-  orchestrator and coder each have a single KV slot: one judge query there
-  would evict a 64k-token conversation. A Jev or CLM backend would be another
+  orchestrator has a single KV slot: one judge query there would evict a
+  128k-token conversation. A Jev or CLM backend would be another
   class with the same `system_one(state, questions)` method
   (`plugins/locoder/routing/judge.py`).
 - **A guessing judge is ignored.** Each answer carries *coverage*, the share of
@@ -96,7 +96,8 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
 
 | path | what | lands at |
 |---|---|---|
-| `llama/presets.ini` | orchestrator, coder, judge presets | mounted into the router container |
+| `llama/presets.ini` | orchestrator and judge presets | mounted into the router container |
+| `scripts/stack.py` | the settings presets, `config.yaml` and `routing.yaml` must agree on | run by `make test` and `make check` |
 | `llama/image.lock` | llama.cpp CUDA image, pinned by digest | created by `make pin-llama`; commit it |
 | `systemd/locoder-llama.service.in` | the router as a user service | `~/.config/systemd/user/` |
 | `hermes.rev` | the Hermes commit in use | `~/.local/share/locoder/hermes` (git + uv venv) |
@@ -135,8 +136,8 @@ and the `claude` CLI logged in to your Max plan. The Hermes venv must end up on 
 *release*: on 3.14.0rc2 Hermes cannot build its OpenAI client (see
 [troubleshooting](#troubleshooting)).
 
-Models go in `/srv/data/models` (override with `MODELS=`): the two GGUFs named
-in `presets.ini`, plus the judge at `judge.gguf` — any small instruct model
+Models go in `/srv/data/models` (override with `MODELS=`): the Laguna S GGUF
+named in `presets.ini` (all three shards), plus the judge at `judge.gguf` — any small instruct model
 (3–4B, Q4) will do; a symlink within the directory is fine. `make check` asks
 it a sanity question and warns if its answers are unusable.
 
@@ -347,13 +348,61 @@ Expect exit 0, `hello.txt`, and a non-zero `estimated_cost_usd`. This is what
 `escalate(backend="openrouter")` runs, minus the worker preamble it puts in
 front of the brief and the `LOCODER_ROUTING_CHILD=1` it sets.
 
+### Tune the local model
+
+There is one local model on the GPU, Laguna S 2.1 (118B total, 8B active), in
+the `orchestrator` preset. It plans, and it is also the `coder` rung:
+`delegation.model` points `delegate_task` children at it. The preset favours
+results over speed:
+
+- **128k context, KV cache at q8_0.** Laguna S is hybrid: 36 of 48 layers use
+  a 512-token sliding window, so only 12 layers' KV grows with the context,
+  about 3.3 GB at 128k. q4_0 would halve that at a cost in long-context
+  accuracy.
+- **Experts placed by `--fit`.** Nothing sets `n-gpu-layers`, `cpu-moe` or
+  `n-cpu-moe`: at load, llama.cpp keeps as many expert layers on the GPU as
+  still leave `fit-target` (2560 MiB) free for the desktop, and puts the rest
+  in RAM. The startup log (`make logs`) shows what it chose.
+- **Thinking on, sampling as Poolside recommends** (`temperature` 0.7,
+  `top-p` 0.95, `top-k` 20). Hermes sends neither to a local provider, so the
+  preset sets them. `reasoning-budget` 8192 ends a reasoning loop instead of
+  letting it run forever.
+- **A RAM prompt cache** (`cache-ram`, 16 GiB). A delegated child pushes the
+  orchestrator's KV out of the single slot; the cache restores it when the
+  orchestrator resumes, instead of re-reading 100k tokens.
+
+After changing the preset:
+
+```sh
+make test      # presets agree with config.yaml and routing.yaml (scripts/stack.py)
+make install   # restarts the router with the new presets
+make check     # the router accepted every key, the orchestrator loaded, its real context, free VRAM
+```
+
+`make test` refuses what would only fail at runtime: a `context_length` in
+`config.yaml` that differs from the preset's `ctx-size`, a context below Hermes'
+minimum, a `delegation.max_concurrent_children` that differs from the preset's
+`parallel`, a hand-set layer count that switches `--fit` off, K and V caches of
+different types (the official CUDA image has flash-attention kernels only for
+matching ones), a judge that shares the orchestrator's slot, and a judge
+`WORKER` description whose context or step count no longer matches. `make check`
+adds what only the running router knows: the router ignores preset keys it
+does not recognise, with only a log line, so `make check` compares its echo
+of each preset with the file.
+
+For a faster, less careful local model: `cache-type-k`/`-v = q4_0` and a lower
+`fit-target` give the experts more VRAM, `reasoning = off` skips thinking. To go
+back to a separate small coder, add its preset, point `delegation.model` at it,
+and update the judge's `WORKER` text; `make test` lists anything left
+inconsistent.
+
 ### Change a skill, plugin or the profile
 
 The checkout is live (see `AGENTS.md`), so after touching `skills/`,
 `plugins/` or `profile/`:
 
 ```sh
-make test            # routing plugin, report and bake-off tests
+make test            # routing plugin, report, bake-off and stack-consistency tests
 make check-offline   # plugins load in the pinned Hermes, tools in the coding toolset, profile wired
 ```
 
@@ -425,7 +474,7 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | key | default | meaning |
 |---|---|---|
 | `llama.base_url` | `http://127.0.0.1:8088/v1` | the llama.cpp router |
-| `llama.judge_model` | `judge` | the CPU-only judge preset; never the orchestrator or coder |
+| `llama.judge_model` | `judge` | the CPU-only judge preset; never the orchestrator |
 | `llama.timeout_s` | 30 | per judge question |
 | `policy.local_threshold` | 0.85 | P(local) for the coder to go first |
 | `policy.local_max_difficulty` | 0.5 | and expected difficulty (0–3) at most this |
@@ -502,6 +551,10 @@ Invoke any of them as `/<name>`.
 | `make check` warns `locoder not on PATH` | the OpenRouter rung cannot start; add `~/.local/bin` to PATH or set `openrouter.hermes_bin` to the wrapper's full path |
 | OpenRouter attempts show cost 0 and `cost_status: unknown` | the model id is an alias OpenRouter's price list does not have; use a concrete id |
 | the reason says the judge's coverage is below `policy.min_coverage` | the judge model mostly answers outside the allowed tokens: try another small instruct model as `judge.gguf` (`make check` warns on it), or lower `policy.min_coverage` |
+| the router log shows the orchestrator failing to allocate its KV cache, or `make check` says it failed to load | too little VRAM for the context at load time: close what holds VRAM and `make restart`; otherwise lower `ctx-size` and `model.context_length` together (at least 64000), or set both cache types to `q4_0` |
+| `make check` says the router ignored a preset key | a typo, an option this llama.cpp image lacks, or an alias of the option's long name; the router only logs a warning and runs without it |
+| `make check` says the orchestrator's slot context differs from `context_length` | the preset and `config.yaml` disagree, or `parallel` split the context; `make test` names which |
+| delegated tasks are much slower than before | expected: the `coder` rung is the 8B-active orchestrator model, not a 3B-active coder; `make logs` shows how many expert layers `--fit` kept on the GPU |
 | every task starts on Claude Code and the reason says "judge unavailable" | the judge preset is down or `judge.gguf` is missing; `make status`, `make check` |
 | Claude Code is skipped although its limit has reset | the lockout came from the fallback or a misread reset; see [handle a Claude Code limit](#handle-a-claude-code-limit) |
 | a skill does not show up in `locoder skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |
@@ -530,8 +583,13 @@ Invoke any of them as `/<name>`.
 - Graft's wiring reaches the orchestrator's own system prompt only from its
   next session (Hermes reads `AGENTS.md` at session start); delegated runs see
   it at once.
-- The coder serves one slot, so `delegation.max_concurrent_children` is 1:
-  fan-out skills (`code-review`, `research`) run their children in sequence.
+- The orchestrator serves one slot, and delegated children run on it, so
+  `delegation.max_concurrent_children` is 1: fan-out skills (`code-review`,
+  `research`) run their children in sequence, and a child runs at the
+  orchestrator's speed.
+- The ledger does not record which model ran a `coder` attempt. Attempts from
+  before the orchestrator took over the rung (the Qwen3.6 coder) sit alongside
+  later ones in `make report`'s coder figures and the judge calibration.
 
 ## Credits
 

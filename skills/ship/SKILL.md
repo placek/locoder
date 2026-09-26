@@ -83,7 +83,7 @@ Load the `implement` skill (`skill_view`); it keeps ticket `Status:` lines curre
 - When the ticket's acceptance tests go green, the ticket is `done`, with its acceptance criteria ticked. Not before.
 - Refactoring waits for step 5. Acceptance-test changes are rulings (see Hardening).
 
-**Delegating tickets.** A ticket bigger than a surgical edit goes through `delegate` (`skill_view`), one ticket per brief: the ticket file, its acceptance tests as the acceptance command, `spec.md`, `CONTEXT.md` if present, and an instruction to load `tdd`. Nothing from this conversation. `route()` decides whether the local coder or a paid rung takes it; the tickets run one after another, because the coder serves a single slot. When one returns, do not trust its report: read `git diff` for its commits and run the ticket's acceptance tests yourself before marking it done — then record the outcome, as `delegate` says.
+**Delegating tickets.** A ticket bigger than a surgical edit goes through `delegate` (`skill_view`), one ticket per brief: the ticket file, its acceptance tests as the acceptance command, `spec.md`, `CONTEXT.md` if present, and an instruction to load `tdd`. Nothing from this conversation. `route()` decides whether the local coder or a paid rung takes it; the tickets run one after another, because the local model serves a single slot. When one returns, do not trust its report: read `git diff` for its commits and run the ticket's acceptance tests yourself before marking it done — then record the outcome, as `delegate` says.
 
 Do not stop between tickets. Plan defects are rulings. If a test will not go green and the cause is not obvious, load `diagnosing-bugs` rather than guessing.
 

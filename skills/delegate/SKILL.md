@@ -11,7 +11,7 @@ Claude Code is the default. The local coder goes first only when the judge is ne
 
 | rung | how | cost |
 |---|---|---|
-| `coder` | `delegate_task` (the delegation default is the local `coder` model) | time only |
+| `coder` | `delegate_task`: a child on your own local model, with a fresh context | time only |
 | `claude` | `escalate(backend="claude")` — Claude Code on the Max plan | Max limits |
 | `openrouter` | `escalate(backend="openrouter")` — a one-shot run of this Hermes profile on a cheaper OpenRouter model | money |
 
@@ -37,7 +37,7 @@ Call `route(brief, workdir)` once. Keep the `decision_id` and the `chain`. Read 
 
 ## 3. Run the current rung
 
-- **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time; the coder serves a single slot.
+- **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time: it runs on your own model, in its single slot, while you wait. It sees only the brief, never this conversation.
 - **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, the result carries `claude_unavailable_until` and a new `chain`: the rest of this task's route with Claude Code locked out. Park whatever the run left behind (step 5.1), record nothing for it, and continue with that `chain` instead of the one `route()` returned. An empty `chain` (Claude Code-only mode) means tell the user when it resets and stop.
 
 ## 4. Verify and record — every attempt
