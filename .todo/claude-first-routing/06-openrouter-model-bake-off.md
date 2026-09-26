@@ -1,6 +1,6 @@
 # 06: Pick the OpenRouter model with a bake-off
 
-Status: ready-for-agent
+Status: tool done; the pick waits for ~10 clean routed tasks on alpha
 Blocked by: 03, 05
 
 ## What to build
@@ -21,7 +21,17 @@ summarised in the commit that sets it.
 
 ## Acceptance criteria
 
-- [ ] Running it with two candidates prints passes, cost and time per model.
-- [ ] Each replay starts from the task's recorded commit in a throwaway worktree, which is removed afterwards.
-- [ ] Decisions without a recorded commit, or whose brief has no acceptance command, are skipped and counted.
-- [ ] The routing ledger is unchanged after a run.
+- [x] Running it with two candidates prints passes, cost and time per model.
+- [x] Each replay starts from the task's recorded commit in a throwaway worktree, which is removed afterwards.
+- [x] Decisions without a recorded commit, or whose brief has no acceptance command, are skipped and counted.
+- [x] The routing ledger is unchanged after a run.
+
+## Notes
+
+`make bakeoff MODELS=a,b[,c] [TASKS=10]`. Tasks routed from a dirty tree are skipped by
+default: `/tdd` usually leaves the new failing test uncommitted, and a replay from the
+commit would lack it. `--include-dirty` replays them anyway. Acceptance checks run in the
+sandbox image (`--check-in host` to run them on the host). A fresh worktree has no
+untracked build state, so compare models with each other rather than against 100%.
+Once the winner is picked, set it as `openrouter.model` in `profile/routing.yaml` and
+summarise the result in that commit.

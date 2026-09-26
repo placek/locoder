@@ -144,6 +144,7 @@ make bump           Hermes to origin/main; kept only if `make check` passes, els
 make bump REV=<sha> a specific commit; commit hermes.rev afterwards
 make pin-llama      re-resolve the llama.cpp image tag to a new digest; commit llama/image.lock
 make report         days without Claude Code, pass rates, coder as fallback, OpenRouter spend, judge calibration
+make bakeoff MODELS=a,b   replay recent delegated tasks on candidate OpenRouter models; set the winner as openrouter.model
 make test           the routing plugin's unit tests
 ```
 

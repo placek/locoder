@@ -53,7 +53,7 @@ CHECK_ENV = HERMES_HOME=$(HERMES_HOME) HERMES_DEFUDDLE_BIN=$(DEFUDDLE_BIN) \
             LOCODER_PRESETS=$(REPO)/llama/presets.ini LOCODER_SANDBOX_IMAGE=$(SANDBOX_IMAGE)
 
 .PHONY: help install hermes profile llama sandbox defuddle wrapper enable disable restart \
-        status logs check check-offline test bump tui report pin-llama uninstall
+        status logs check check-offline test bump tui report bakeoff pin-llama uninstall
 
 help:
 	@sed -n 's/^#   make /  make /p' Makefile
@@ -177,6 +177,12 @@ bump:
 
 report:
 	@HERMES_HOME=$(HERMES_HOME) $(HERMES_PY) scripts/report.py
+
+# Replay recent delegated tasks on candidate OpenRouter models: make bakeoff MODELS=a,b [TASKS=10]
+bakeoff:
+	@test -n "$(MODELS)" || { echo "usage: make bakeoff MODELS=model-a,model-b [TASKS=10]"; exit 2; }
+	@set -a; [ ! -f $(HERMES_HOME)/.env ] || . $(HERMES_HOME)/.env; set +a; \
+	    HERMES_HOME=$(HERMES_HOME) $(HERMES_PY) scripts/bakeoff.py --models $(MODELS) --tasks $(or $(TASKS),10)
 
 # Removes what `install` placed outside the repo. State (the Hermes home with
 # sessions, memories and the routing ledger) survives unless PURGE=1.
