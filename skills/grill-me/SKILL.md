@@ -1,0 +1,6 @@
+---
+name: grill-me
+description: A relentless interview to sharpen a plan or design.
+---
+
+Load the `grilling` skill (`skill_view`).

@@ -1,0 +1,49 @@
+# Routing settings for the locoder/routing plugin. Linked into the Hermes home
+# as routing.yaml; re-read on every tool call, so edits apply without restart.
+# Anything left out falls back to the defaults in plugins/locoder/routing/settings.py.
+
+llama:
+  base_url: http://127.0.0.1:8088/v1
+  # The CPU-only preset in llama/presets.ini. Never point this at orchestrator
+  # or coder: both run one slot, and a judge query would evict their KV cache.
+  judge_model: judge
+  timeout_s: 30
+
+policy:
+  # Start on the local coder when P(coder finishes) >= local_threshold AND the
+  # expected difficulty (0 trivial .. 3 heavy) is <= local_max_difficulty.
+  # A wrong "coder" costs minutes (the cascade escalates); a wrong "paid" costs
+  # quota. Tune these from `make report` once the ledger has a few weeks in it.
+  local_threshold: 0.6
+  local_max_difficulty: 1.5
+  # When ahead of the weekly pace, only tasks at or above this still get Claude Code.
+  hard_difficulty: 2.5
+  # How far ahead of a straight line across the week spending may run.
+  pace_slack: 0.10
+  fail_open_rung: coder
+
+claude:
+  bin: claude
+  max_turns: 15
+  timeout_s: 1800
+  allowed_tools: [Read, Edit, Write, Bash, Grep, Glob]
+  workdir_roots: [/srv/data/projects]
+  # When your Max weekly window resets (0 = Monday .. 6 = Sunday, local time).
+  # Check it in Claude Code with /usage and set it here: the pacer's whole idea
+  # of "ahead" or "behind" hangs on this.
+  week:
+    reset_weekday: 0
+    reset_hour: 9
+    timezone: Europe/Warsaw
+  # First guess at the week's size in Claude Code cost units (total_cost_usd).
+  # Replaced automatically by the median spend at your last limit hits.
+  weekly_budget: 300
+  result_chars: 8000
+
+openrouter:
+  enabled: true
+  api_key_env: OPENROUTER_API_KEY
+  base_url: https://openrouter.ai/api
+  # Same model family as Max, so a blackout day behaves like any other day.
+  model: anthropic/claude-fable-5.1
+  config_dir: ~/.local/state/locoder/claude-openrouter

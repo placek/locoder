@@ -1,0 +1,30 @@
+[Unit]
+Description=locoder: llama.cpp router (orchestrator, coder, judge)
+Documentation=file://@REPO@/README.md
+
+[Service]
+Type=simple
+# A container left over from a crash would block the name.
+ExecStartPre=-@DOCKER@ rm -f locoder-llama
+# Presets are mounted as a directory, not a file: editors replace files by
+# rename, and a single-file bind mount keeps pointing at the old inode.
+ExecStart=@DOCKER@ run --rm --name locoder-llama \
+    @GPU_ARGS@ \
+    --user @UID@:@GID@ \
+    --publish 127.0.0.1:@PORT@:8080 \
+    --volume @MODELS@:/models \
+    --volume @REPO@/llama:/etc/locoder:ro \
+    --volume @STATE@/llama-cache:/cache \
+    --env LLAMA_CACHE=/cache --env XDG_CACHE_HOME=/cache --env HOME=/cache \
+    @IMAGE@ \
+    --host 0.0.0.0 --port 8080 \
+    --models-preset /etc/locoder/presets.ini \
+    --models-max 3
+ExecStop=@DOCKER@ stop --time 60 locoder-llama
+Restart=on-failure
+RestartSec=10
+# First start pages ~96 GB of weights in through mmap.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

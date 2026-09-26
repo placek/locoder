@@ -1,0 +1,17 @@
+# Hermes writes runtime state into the linked skills/ directory.
+skills/.hub/
+skills/.usage.json
+skills/.usage.json.lock
+skills/.bundled_manifest
+skills/.curator_state
+skills/.curator_ledger.jsonl
+skills/.archive/
+skills/.curator_backups/
+
+# Python bytecode from the plugins Hermes loads out of plugins/, and from tests.
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets live in $HERMES_HOME/.env, never here.
+.env
