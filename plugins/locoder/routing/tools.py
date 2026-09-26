@@ -1,7 +1,9 @@
 """The agent-facing routing tools. Handlers return JSON strings, as Hermes tools do."""
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -115,6 +117,34 @@ def git_head(workdir: str) -> Optional[Tuple[str, bool]]:
     return sha, dirty
 
 
+def hermes_conversation_root(session_id: str) -> str:
+    """The session's lineage root in Hermes' session DB. Compression rotates a conversation's
+    session id; the root stays, so a routing mode keyed by it survives compression."""
+    try:
+        from hermes_state import SessionDB
+    except ImportError:
+        return session_id
+    db = None
+    try:
+        db = SessionDB(read_only=True)
+        return db.get_conversation_root(session_id) or session_id
+    except Exception:
+        return session_id
+    finally:
+        close = getattr(db, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+
+
+def _child_refusal() -> Optional[str]:
+    """Inside the OpenRouter rung's one-shot run, routing belongs to the orchestrator."""
+    if os.environ.get(backends.CHILD_ENV):
+        return _error("This is a delegated run: do the task yourself with the file and terminal tools. "
+                      "Routing, escalation and routing modes belong to the orchestrator.")
+    return None
+
+
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
 
@@ -128,17 +158,33 @@ class Router:
     Config is re-read per call, so an edited routing.yaml applies on the next tool call."""
 
     def __init__(self, clock: Callable[[], float] = time.time, judge_factory=None, ledger: Optional[Ledger] = None,
-                 config_loader: Callable[[], dict] = settings.load):
+                 config_loader: Callable[[], dict] = settings.load,
+                 conversation_root: Callable[[str], str] = hermes_conversation_root):
         self.clock = clock
         self._ledger = ledger
         self._judge_factory = judge_factory or (lambda cfg: Judge(
             cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"]))
         self._load = config_loader
-        # Hermes passes the calling session's id to every handler; a session never set here is "auto".
+        self._conversation_root = conversation_root
+        # Keyed by conversation root; a conversation never switched is "auto".
         self._modes: Dict[str, str] = {}
+        self._roots: Dict[str, str] = {}
+
+    def _conversation(self, kwargs: Dict[str, Any]) -> str:
+        """Hermes passes the calling session's id to every handler; map it to its conversation root.
+        Only a resolved rotation is cached: a new session's DB row may not exist yet."""
+        sid = str(kwargs.get("session_id") or "")
+        if not sid:
+            return ""
+        if sid not in self._roots:
+            root = self._conversation_root(sid) or sid
+            if root == sid:
+                return sid
+            self._roots[sid] = root
+        return self._roots[sid]
 
     def _mode(self, kwargs: Dict[str, Any]) -> str:
-        return self._modes.get(str(kwargs.get("session_id") or ""), "auto")
+        return self._modes.get(self._conversation(kwargs), "auto")
 
     @property
     def ledger(self) -> Ledger:
@@ -148,6 +194,8 @@ class Router:
 
     # -- route ----------------------------------------------------------------
     def route(self, args: Dict[str, Any], **kwargs: Any) -> str:
+        if refusal := _child_refusal():
+            return refusal
         brief = str(args.get("brief") or "").strip()
         if not brief:
             return _error("brief is required")
@@ -174,6 +222,8 @@ class Router:
 
     # -- escalate -------------------------------------------------------------
     async def escalate(self, args: Dict[str, Any], **kwargs: Any) -> str:
+        if refusal := _child_refusal():
+            return refusal
         cfg = self._load()
         brief = str(args.get("brief") or "").strip()
         if not brief:
@@ -188,8 +238,22 @@ class Router:
             return _error(f"unknown backend {requested!r}")
 
         now = self.clock()
-        if requested == "auto":
-            rung, why = policy.paid_rung(policy.claude_state(self.ledger, now), cfg)
+        mode = self._mode(kwargs)
+        claude_now = policy.claude_state(self.ledger, now)
+        if mode == "local":
+            return _error("This session's routing mode is local: paid rungs are off. Use the coder, or ask the "
+                          "user to switch with /routing-mode.")
+        if mode == "claude":
+            if requested == "openrouter":
+                return _error("This session's routing mode is claude: OpenRouter is off.")
+            if not claude_now.available:
+                return _json({"decision_id": decision_id, "backend": None, "ok": False, "chain": [],
+                              "claude_unavailable_until": policy.when(claude_now.unavailable_until, cfg),
+                              "next": "Claude Code is locked out and this session's routing mode is claude: "
+                                      "tell the user when it resets and stop."})
+            rung, why = "claude", "routing mode claude"
+        elif requested == "auto":
+            rung, why = policy.paid_rung(claude_now, cfg)
         else:
             rung, why = requested, "requested explicitly"
 
@@ -207,7 +271,10 @@ class Router:
         if result.limit_hit and rung == "claude":
             until = self._lock_out_claude(result.result, now, cfg)
             after = policy.decide(self._stored_verdict(decision_id), policy.ClaudeState(until), cfg,
-                                  judge_error="no verdict recorded for this task", mode=self._mode(kwargs))
+                                  judge_error="no verdict recorded for this task", mode=mode)
+            # A rung this task already failed is not tried again.
+            failed = self.ledger.failed_rungs(decision_id) if decision_id else set()
+            after.chain = [r for r in after.chain if r not in failed]
             out.update(claude_unavailable_until=policy.when(until, cfg), chain=after.chain,
                        chain_reason=after.reason,
                        next=("Claude Code hit a limit before finishing; nothing it did counts. Park any "
@@ -238,6 +305,8 @@ class Router:
 
     # -- outcome & status -----------------------------------------------------
     def outcome(self, args: Dict[str, Any], **_: Any) -> str:
+        if refusal := _child_refusal():
+            return refusal
         decision_id = str(args.get("decision_id") or "")
         rung = str(args.get("rung") or "")
         if rung not in policy.RUNGS:
@@ -261,7 +330,9 @@ class Router:
             return _json({"mode": self._mode(kwargs)})
         if mode not in policy.MODES:
             return _error(f"mode must be one of {list(policy.MODES)}")
-        self._modes[str(kwargs.get("session_id") or "")] = mode
+        if refusal := _child_refusal():
+            return refusal
+        self._modes[self._conversation(kwargs)] = mode
         return _json({"mode": mode})
 
 

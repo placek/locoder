@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "locoder"))
 from routing import policy, settings  # noqa: E402
@@ -80,9 +81,10 @@ def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
 
     say("\nopenrouter spend by month")
     months = db.execute("SELECT ts, cost FROM attempts WHERE rung='openrouter' AND cost>0").fetchall()
+    zone = ZoneInfo(cfg["claude"]["week"]["timezone"])
     by_month: dict = {}
     for m in months:
-        key = datetime.fromtimestamp(m["ts"]).strftime("%Y-%m")
+        key = datetime.fromtimestamp(m["ts"], zone).strftime("%Y-%m")
         by_month[key] = by_month.get(key, 0.0) + m["cost"]
     for key in sorted(by_month)[-3:]:
         say(f"  {key}  {by_month[key]:8.2f}")
@@ -98,13 +100,16 @@ def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
 
     say("\ncoder attempts by why it ran")
     groups = {"sure thing": [0, 0], "fallback": [0, 0], "forced (local mode)": [0, 0]}
+    # Fallback: the decision was made with Claude Code locked out, or it was locked out when the
+    # attempt was recorded (a limit hit mid-task). A coder attempt's ts is when it was labelled.
     rows = db.execute("""
-        SELECT a.ts, a.verified, d.mode FROM attempts a LEFT JOIN decisions d ON d.id = a.decision_id
+        SELECT a.ts, a.verified, d.mode, d.claude FROM attempts a LEFT JOIN decisions d ON d.id = a.decision_id
         WHERE a.rung='coder' AND a.verified IS NOT NULL""").fetchall()
     for r in rows:
+        snapshot = json.loads(r["claude"]) if r["claude"] else {}
         if (r["mode"] or "auto") == "local":
             key = "forced (local mode)"
-        elif _locked_at(lockouts, r["ts"]):
+        elif snapshot.get("available") is False or _locked_at(lockouts, r["ts"]):
             key = "fallback"
         else:
             key = "sure thing"

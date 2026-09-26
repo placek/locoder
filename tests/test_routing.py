@@ -168,6 +168,11 @@ def test_local_mode_forces_the_coder_with_no_retry():
     assert d.rung == "coder" and d.chain == ["coder"]
 
 
+def test_local_mode_stays_local_while_claude_is_locked_out():
+    d = policy.decide(verdict(0.05, 3.0), LOCKED_OUT, cfg(), mode="local")
+    assert d.rung == "coder" and d.chain == ["coder"]
+
+
 def test_claude_mode_forces_claude_with_its_retry():
     d = policy.decide(verdict(0.99, 0.0), AVAILABLE, cfg(), mode="claude")
     assert d.rung == "claude" and d.chain == ["claude", "claude"]
@@ -260,22 +265,23 @@ def test_parse_success_reads_cost_and_turns():
     assert r.ok and r.cost == 1.25 and r.turns == 7 and not r.limit_hit
 
 
-def test_subscription_env_strips_api_billing_vars():
-    env = backends.environment("claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin"})
-    assert "ANTHROPIC_API_KEY" not in env and env["PATH"] == "/bin"
+def test_subscription_env_strips_api_billing_vars_but_keeps_the_login_dir():
+    env = backends.environment("claude", {"ANTHROPIC_API_KEY": "sk", "PATH": "/bin", "CLAUDE_CONFIG_DIR": "/c"})
+    assert "ANTHROPIC_API_KEY" not in env and env["PATH"] == "/bin" and env["CLAUDE_CONFIG_DIR"] == "/c"
+    assert backends.CHILD_ENV not in env
 
 
 def test_openrouter_command_runs_this_profile_one_shot(tmp_path):
     cmd = backends.command(cfg(), "openrouter", "do it", usage_file=tmp_path / "u.json", workdir=tmp_path)
-    assert cmd == ["locoder", "-z", "do it", "-m", "deepseek/deepseek-v4.1-flash",
+    assert cmd == ["locoder", "-z", backends.CHILD_PREAMBLE + "do it", "-m", "deepseek/deepseek-v4.1-flash",
                    "--provider", "custom:openrouter", "--in", str(tmp_path),
-                   "--usage-file", str(tmp_path / "u.json"), "-t", "coding"]
+                   "--usage-file", str(tmp_path / "u.json"), "-t", "file,terminal,web,todo"]
     assert "claude" not in cmd
 
 
-def test_openrouter_env_keeps_the_profile_env():
+def test_openrouter_env_keeps_the_profile_env_and_marks_the_child():
     env = backends.environment("openrouter", {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"})
-    assert env == {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h"}
+    assert env == {"OPENROUTER_API_KEY": "or-key", "HERMES_HOME": "/h", backends.CHILD_ENV: "1"}
 
 
 def test_parse_oneshot_reads_usage_and_exit_code():
@@ -308,6 +314,9 @@ import json, os, sys
 mode = open(os.environ["FAKE_CLAUDE_MODE"]).read().strip()
 if mode == "limit":
     print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
+    sys.exit(1)
+if mode == "limit-3h":
+    print(json.dumps({"is_error": True, "result": "Session limit reached. Resets in 3h"}))
     sys.exit(1)
 if mode == "limit-no-reset":
     print(json.dumps({"is_error": True, "result": "Usage limit reached."}))
@@ -357,9 +366,10 @@ def router(tmp_path, monkeypatch):
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
             openrouter={"hermes_bin": str(hermes)})
-    state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24)}
+    state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24), "roots": {}}
     r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
-               ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c)
+               ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c,
+               conversation_root=lambda sid: state["roots"].get(sid, sid))
     r.test = {"mode": mode, "hermes_mode": hermes_mode, "argv": tmp_path / "hermes-argv",
               "proj": str(tmp_path / "proj"), "state": state}
     return r
@@ -478,7 +488,7 @@ def test_openrouter_rung_runs_hermes_one_shot_and_records_its_cost(router):
     assert r["ok"] and r["backend"] == "openrouter" and r["run"]["result"] == "done via openrouter"
     assert r["run"]["cost_status"] == "estimated"
     argv = json.loads(router.test["argv"].read_text())
-    assert argv[:2] == ["-z", "task"] and argv[argv.index("--in") + 1] == router.test["proj"]
+    assert argv[0] == "-z" and argv[1].endswith("\n\ntask") and argv[argv.index("--in") + 1] == router.test["proj"]
     assert router.ledger.stats(0)["openrouter"]["cost"] == 0.4
 
 
@@ -546,9 +556,72 @@ def test_claude_mode_hands_back_while_locked_out(router):
     router.test["mode"].write_text("limit")
     r = call(router.escalate, session="s1", brief="task", workdir=router.test["proj"])
     assert r["chain"] == [] and "tell the user" in r["next"]
+    assert r["claude_unavailable_until"] == "Mon 28 Sep 09:00"
     d = call(router.route, session="s1", brief="task")
     assert d["rung"] == "user" and d["chain"] == [] and "stop" in d["next"]
 
 
 def test_unknown_mode_is_refused(router):
     assert "mode must be one of" in call(router.set_mode, session="s1", mode="cheap")["error"]
+
+
+def test_mode_survives_compression_rotating_the_session_id(router):
+    call(router.set_mode, session="s1", mode="local")
+    router.test["state"]["roots"]["s1-rotated"] = "s1"
+    assert call(router.status, session="s1-rotated")["mode"] == "local"
+    assert call(router.status, session="s9")["mode"] == "auto"
+
+
+def test_escalate_refuses_paid_rungs_in_local_mode(router):
+    call(router.set_mode, session="s1", mode="local")
+    r = call(router.escalate, session="s1", brief="task", workdir=router.test["proj"])
+    assert "paid rungs are off" in r["error"]
+
+
+def test_escalate_in_claude_mode_never_runs_openrouter(router):
+    call(router.set_mode, session="s1", mode="claude")
+    assert "OpenRouter is off" in call(router.escalate, session="s1", brief="t", workdir=router.test["proj"],
+                                       backend="openrouter")["error"]
+    router.test["mode"].write_text("limit")
+    call(router.escalate, session="s1", brief="t", workdir=router.test["proj"])
+    r = call(router.escalate, session="s1", brief="t", workdir=router.test["proj"])
+    assert r["chain"] == [] and r["backend"] is None and r["claude_unavailable_until"] == "Mon 28 Sep 09:00"
+    assert router.ledger.db.execute("SELECT COUNT(*) FROM attempts WHERE rung='openrouter'").fetchone()[0] == 0
+
+
+def test_lockout_chain_skips_a_rung_this_task_already_failed(router):
+    router.test["state"]["verdict"] = verdict(0.9, 0.3)
+    d = call(router.route, brief="task", workdir=router.test["proj"])
+    assert d["chain"] == ["coder", "claude", "claude"]
+    call(router.outcome, decision_id=d["decision_id"], rung="coder", verified=False)
+    router.test["mode"].write_text("limit")
+    r = call(router.escalate, brief="task", workdir=router.test["proj"], decision_id=d["decision_id"])
+    assert r["chain"] == ["openrouter"]
+
+
+def test_routing_tools_refuse_inside_the_openrouter_child(router, monkeypatch):
+    monkeypatch.setenv(backends.CHILD_ENV, "1")
+    for fn, args in ((router.route, {"brief": "t"}), (router.escalate, {"brief": "t", "workdir": router.test["proj"]}),
+                     (router.outcome, {"decision_id": "x", "rung": "coder", "verified": True}),
+                     (router.set_mode, {"mode": "local"})):
+        assert "delegated run" in call(fn, **args)["error"]
+
+
+def test_routing_status_reports_this_weeks_results(router):
+    d = call(router.route, brief="t")
+    call(router.outcome, decision_id=d["decision_id"], rung="coder", verified=True)
+    call(router.escalate, brief="t", workdir=router.test["proj"])
+    week = call(router.status)["this_week"]
+    assert week["coder"] == {"attempts": 1, "verified": 1, "failed": 0, "cost": 0}
+    assert week["claude"]["attempts"] == 1 and week["claude"]["cost"] == 2.5
+
+
+def test_a_session_limit_locks_out_for_hours_not_the_week(router):
+    start = router.test["state"]["now"]
+    router.test["mode"].write_text("limit-3h")
+    call(router.escalate, brief="t", workdir=router.test["proj"])
+    router.test["state"]["verdict"] = verdict(0.1, 2.9)
+    router.test["state"]["now"] = start + 3 * 3600 - 60
+    assert call(router.route, brief="hard")["rung"] == "openrouter"
+    router.test["state"]["now"] = start + 3 * 3600 + 1
+    assert call(router.route, brief="hard")["rung"] == "claude"

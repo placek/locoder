@@ -33,12 +33,12 @@ No acceptance command means the task is not ready to delegate. Write the failing
 
 Call `route(brief, workdir)` once. Keep the `decision_id` and the `chain`. Read the `reason` — if it is obviously wrong (say, a one-line typo routed to a paid rung), note that in `route_outcome` later rather than overriding the chain.
 
-`route()` follows the session's routing mode (`/routing-mode`): in `claude` or `local` the chain is that one rung. A `rung` of `user` means nothing may run the task now (Claude Code-only mode while it is locked out): tell the user the `reason` and stop.
+`route()` follows the session's routing mode (`/routing-mode`): in `claude` the chain is `claude, claude` (its one retry), in `local` it is `coder` alone with no retry, and `escalate()` refuses the rungs a mode rules out. A `rung` of `user` means nothing may run the task now (Claude Code-only mode while it is locked out): tell the user the `reason` and stop.
 
 ## 3. Run the current rung
 
 - **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time; the coder serves a single slot.
-- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, the result carries `claude_unavailable_until` and a new `chain`: the rest of this task's route with Claude Code locked out. Park whatever the run left behind (step 5.1), record nothing for it, and continue with that `chain` instead of the one `route()` returned.
+- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, the result carries `claude_unavailable_until` and a new `chain`: the rest of this task's route with Claude Code locked out. Park whatever the run left behind (step 5.1), record nothing for it, and continue with that `chain` instead of the one `route()` returned. An empty `chain` (Claude Code-only mode) means tell the user when it resets and stop.
 
 ## 4. Verify and record — every attempt
 

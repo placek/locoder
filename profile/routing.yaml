@@ -49,5 +49,6 @@ openrouter:
   # prices runs from OpenRouter's model list, and an unlisted id costs "unknown".
   # Without a TTY, Hermes refuses models over $20/M input or $100/M output.
   model: deepseek/deepseek-v4.1-flash
-  toolsets: coding
+  # No delegate_task, clarify or routing tools: the run is the worker.
+  toolsets: file,terminal,web,todo
   timeout_s: 1800

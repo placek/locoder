@@ -19,7 +19,7 @@ So a broken `SKILL.md`, `plugin.yaml` or plugin module breaks the agent editing
 it. After touching any of them:
 
 ```sh
-make test           # routing plugin unit tests
+make test           # routing plugin, report and bake-off unit tests
 make check-offline  # plugins load in the pinned Hermes, tools visible, profile wired
 ```
 

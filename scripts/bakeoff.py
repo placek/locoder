@@ -62,12 +62,20 @@ def acceptance_command(brief: str) -> Optional[str]:
     return None
 
 
+_NOT_PATHS = {"and", "or", "the", "these", "files", "paths"}
+
+
 def allowed_paths(brief: str) -> List[str]:
+    """Paths after "touch nothing outside", backticked or as plain words up to the clause's end."""
+    marker = "touch nothing outside"
     for line in brief.splitlines():
         low = line.lower()
-        if "touch nothing outside" in low:
-            tail = line[low.index("touch nothing outside"):]
-            return [p.strip().rstrip("/") for p in _BACKTICKED.findall(tail) if p.strip()]
+        if marker not in low:
+            continue
+        tail = line[low.index(marker) + len(marker):]
+        words = _BACKTICKED.findall(tail) or re.split(r"[,\s]+", re.split(r";|\.(?=\s|$)", tail)[0])
+        return [w.strip("<>").rstrip("/") for w in (w.strip() for w in words)
+                if w and w.strip("<>").lower() not in _NOT_PATHS]
     return []
 
 

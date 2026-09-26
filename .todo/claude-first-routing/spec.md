@@ -1,6 +1,6 @@
 # Claude-first routing
 
-Status: agreed
+Status: implemented (see coverage.md)
 
 Hermes stays the one harness. Claude Code becomes the default worker for delegated
 tasks; local models take only what they are near-certain to finish, and pick up the

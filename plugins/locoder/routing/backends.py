@@ -106,7 +106,19 @@ def _parse_reset(text: str, now: float, default_tz: str) -> Optional[float]:
 
 # Variables that would silently switch the Max path to pay-per-token API billing or to
 # another endpoint; stripped for the subscription rung.
-_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR")
+_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+
+# Set in the OpenRouter rung's environment. The one-shot run loads this same profile, so its
+# routing plugin sees this and refuses: a delegated run must not route, escalate or re-delegate.
+CHILD_ENV = "LOCODER_ROUTING_CHILD"
+
+# Prepended to the brief for the OpenRouter rung: the profile's SOUL and auto-loaded `delegate`
+# skill tell the orchestrator to delegate, but this run is the worker.
+CHILD_PREAMBLE = (
+    "You are the worker for this one task, not the orchestrator: do it yourself with the file and "
+    "terminal tools, run its acceptance check, and finish with a short report of what you changed "
+    "and the check's result.\n\n"
+)
 
 
 class BackendError(RuntimeError):
@@ -147,7 +159,7 @@ def command(cfg: dict, rung: str, brief: str, max_turns: Optional[int] = None,
             usage_file: Optional[Path] = None, workdir: Optional[Path] = None) -> List[str]:
     if rung == "openrouter":
         o = cfg["openrouter"]
-        return [o["hermes_bin"], "-z", brief, "-m", o["model"], "--provider", o["provider"],
+        return [o["hermes_bin"], "-z", CHILD_PREAMBLE + brief, "-m", o["model"], "--provider", o["provider"],
                 "--in", str(workdir), "--usage-file", str(usage_file), "-t", o["toolsets"]]
     c = cfg["claude"]
     return [c["bin"], "-p", brief, "--output-format", "json",
@@ -158,7 +170,8 @@ def command(cfg: dict, rung: str, brief: str, max_turns: Optional[int] = None,
 def environment(rung: str, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     env = dict(base if base is not None else os.environ)
     if rung == "claude":
-        env = {k: v for k, v in env.items() if k not in _AUTH_VARS}
+        return {k: v for k, v in env.items() if k not in _AUTH_VARS}
+    env[CHILD_ENV] = "1"
     return env
 
 

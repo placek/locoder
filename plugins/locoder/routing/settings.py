@@ -46,7 +46,9 @@ DEFAULTS: Dict[str, Any] = {
         # `custom:` reaches the profile's custom_providers entry; bare `openrouter` is Hermes' built-in.
         "provider": "custom:openrouter",
         "model": "deepseek/deepseek-v4.1-flash",
-        "toolsets": "coding",
+        # Files, terminal, web and todos: no delegate_task, clarify or routing tools, so the run
+        # does the work itself and cannot wait on a user who is not there.
+        "toolsets": "file,terminal,web,todo",
         "timeout_s": 1800,
     },
 }
