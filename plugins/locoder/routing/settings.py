@@ -29,7 +29,8 @@ DEFAULTS: Dict[str, Any] = {
         "bin": "claude",
         "max_turns": 15,
         "timeout_s": 1800,
-        "allowed_tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+        # mcp__graft: every tool of the project's graft MCP server (`claude -p` loads .mcp.json itself).
+        "allowed_tools": ["Read", "Edit", "Write", "Bash", "Grep", "Glob", "mcp__graft"],
         # escalate() refuses any workdir outside these roots.
         "workdir_roots": ["/srv/data/projects"],
         # When the Max week resets; results are grouped by this window.
@@ -38,6 +39,12 @@ DEFAULTS: Dict[str, Any] = {
         # task after that tries again, and a limit still in force fails fast and re-locks.
         "limit_fallback_s": 3600,
         "result_chars": 8000,
+    },
+    "graft": {
+        # Wire graft into a project the first time a task there is routed (see graft.py).
+        "enabled": True,
+        "bin": "graft",
+        "timeout_s": 300,
     },
     "openrouter": {
         "enabled": True,

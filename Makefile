@@ -37,12 +37,16 @@ SANDBOX_IMAGE := locoder-sandbox:local
 # ddgs: keyless search backend (web/ddgs in config.yaml).
 HERMES_EXTRAS    ?= ddgs
 DEFUDDLE_VERSION ?= 0.19.4
+# One pin for the host install and the sandbox image; bump both by changing it here.
+GRAFT_VERSION    ?= 0.20.0
 REV              ?= main
 
 HERMES_REV    := $(shell cat hermes.rev)
 HERMES_STAMP  := $(PREFIX)/hermes/.locoder-rev
 HERMES_PY     := $(PREFIX)/hermes/.venv/bin/python
 DEFUDDLE_BIN  := $(PREFIX)/tools/defuddle/node_modules/.bin/defuddle
+GRAFT_DIR     := $(PREFIX)/tools/graft
+GRAFT_STAMP   := $(GRAFT_DIR)/.locoder-$(GRAFT_VERSION)
 LLAMA_IMAGE    = $(shell cat llama/image.lock)
 
 PROFILE_FILES := config.yaml SOUL.md routing.yaml
@@ -52,15 +56,16 @@ LLAMA_UNIT    := $(UNIT_DIR)/locoder-llama.service
 WRAPPER       := $(BIN_DIR)/locoder
 
 CHECK_ENV = HERMES_HOME=$(HERMES_HOME) HERMES_DEFUDDLE_BIN=$(DEFUDDLE_BIN) \
-            LOCODER_PRESETS=$(REPO)/llama/presets.ini LOCODER_SANDBOX_IMAGE=$(SANDBOX_IMAGE)
+            LOCODER_PRESETS=$(REPO)/llama/presets.ini LOCODER_SANDBOX_IMAGE=$(SANDBOX_IMAGE) \
+            LOCODER_GRAFT_VERSION=$(GRAFT_VERSION) PATH=$(GRAFT_DIR)/node_modules/.bin:$$PATH
 
-.PHONY: help install hermes profile llama sandbox defuddle wrapper enable disable restart \
+.PHONY: help install hermes profile llama sandbox defuddle graft wrapper enable disable restart \
         status logs check check-offline test bump tui report bakeoff pin-llama uninstall
 
 help:
 	@sed -n 's/^#   make /  make /p' Makefile
 
-install: hermes profile defuddle sandbox llama wrapper
+install: hermes profile defuddle graft sandbox llama wrapper
 	@echo "installed. next: make enable && make check"
 
 # -- Hermes: pinned checkout + uv venv ------------------------------------------
@@ -101,12 +106,20 @@ $(DEFUDDLE_BIN):
 	npm install --silent --no-audit --no-fund --prefix $(PREFIX)/tools/defuddle defuddle@$(DEFUDDLE_VERSION)
 	test -x $@
 
-# -- Terminal sandbox image ------------------------------------------------------
-sandbox: $(STATE)/sandbox.stamp
+# Graft on the host: route() wires projects with it, and Claude Code's MCP server runs it.
+graft: $(GRAFT_STAMP)
 
-$(STATE)/sandbox.stamp: sandbox/Dockerfile
-	$(DOCKER) build --quiet --tag $(SANDBOX_IMAGE) sandbox
-	@mkdir -p $(STATE) && touch $@
+$(GRAFT_STAMP):
+	npm install --silent --no-audit --no-fund --prefix $(GRAFT_DIR) @nanonets/graft@$(GRAFT_VERSION)
+	test -x $(GRAFT_DIR)/node_modules/.bin/graft
+	rm -f $(GRAFT_DIR)/.locoder-* && touch $@
+
+# -- Terminal sandbox image ------------------------------------------------------
+sandbox: $(STATE)/sandbox-$(GRAFT_VERSION).stamp
+
+$(STATE)/sandbox-$(GRAFT_VERSION).stamp: sandbox/Dockerfile
+	$(DOCKER) build --quiet --build-arg GRAFT_VERSION=$(GRAFT_VERSION) --tag $(SANDBOX_IMAGE) sandbox
+	@mkdir -p $(STATE) && rm -f $(STATE)/sandbox*.stamp && touch $@
 
 # -- llama.cpp router ---------------------------------------------------------------
 llama: $(LLAMA_UNIT) $(STATE)/presets.stamp | $(STATE)/llama-cache

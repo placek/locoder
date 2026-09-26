@@ -18,6 +18,12 @@ RUN apt-get update \
 # uv for Python projects; the base image ships pip only.
 RUN pip install --no-cache-dir uv
 
+# graft: the code graph every project's AGENTS.md tells the agent to query. Pinned by
+# GRAFT_VERSION in the Makefile, the same version as the host install; no telemetry.
+ARG GRAFT_VERSION=0.20.0
+RUN npm install -g --no-audit --no-fund @nanonets/graft@${GRAFT_VERSION}
+ENV DO_NOT_TRACK=1
+
 # docker_run_as_host_user runs this as your uid, which has no passwd entry
 # here; give such users a writable HOME so tools can cache.
 ENV HOME=/tmp/home

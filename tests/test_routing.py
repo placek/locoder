@@ -365,7 +365,7 @@ def router(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_HERMES_ARGV", str(tmp_path / "hermes-argv"))
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
-            openrouter={"hermes_bin": str(hermes)})
+            openrouter={"hermes_bin": str(hermes)}, graft={"enabled": False})
     state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24), "roots": {}}
     r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c,

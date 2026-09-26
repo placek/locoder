@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from . import backends, policy, settings
+from . import backends, graft, policy, settings
 from .judge import Judge, JudgeError, Verdict, verdict_dict
 from .ledger import Ledger
 
@@ -169,6 +169,8 @@ class Router:
         # Keyed by conversation root; a conversation never switched is "auto".
         self._modes: Dict[str, str] = {}
         self._roots: Dict[str, str] = {}
+        # Repos whose graft wiring failed: not retried until Hermes restarts.
+        self._graft_failed: set = set()
 
     def _conversation(self, kwargs: Dict[str, Any]) -> str:
         """Hermes passes the calling session's id to every handler; map it to its conversation root.
@@ -210,12 +212,14 @@ class Router:
         d = policy.decide(verdict, claude, cfg, judge_error, mode=mode)
         vd, cd = verdict_dict(verdict), claude.as_dict()
         workdir = args.get("workdir") or None
+        # Wire graft first, so the commit recorded below is the one the task starts from.
+        graft_result = graft.ensure(workdir, cfg, self._graft_failed)
         head = git_head(workdir) if workdir else None
         decision_id = self.ledger.add_decision(brief, workdir, d.rung, d.reason, vd, cd,
                                                commit_sha=head[0] if head else None,
                                                dirty=head[1] if head else None, mode=mode)
         out = {"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
-               "mode": mode, "judge": vd, "claude": cd}
+               "mode": mode, "judge": vd, "claude": cd, "graft": graft_result}
         if d.rung == policy.HAND_BACK:
             out["next"] = "Nothing may run this task now: tell the user why (the reason) and stop."
         return _json(out)

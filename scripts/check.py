@@ -128,12 +128,37 @@ def check_tools() -> None:
         ok(f"defuddle: {defuddle}")
     else:
         fail(f"defuddle binary not executable: {defuddle or '(HERMES_DEFUDDLE_BIN unset)'}")
+    want = os.environ.get("LOCODER_GRAFT_VERSION", "")
+    graft = shutil.which("graft")
+    if graft:
+        _graft_version("host", [graft, "--version"], want)
+    else:
+        fail("graft not on PATH: route() cannot wire projects (make graft)")
     image = os.environ.get("LOCODER_SANDBOX_IMAGE", "locoder-sandbox:local")
     if shutil.which("docker"):
         res = subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30)
         (ok if res.returncode == 0 else fail)(f"sandbox image {image}" + ("" if res.returncode == 0 else " not built"))
+        if res.returncode == 0:
+            _graft_version("sandbox", ["docker", "run", "--rm", image, "graft", "--version"], want)
     else:
         fail("docker not on PATH")
+
+
+def _graft_version(where: str, argv: list, want: str) -> None:
+    """Hermes (sandbox) and Claude Code (host) must query the graph with the same graft."""
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=120,
+                             env={**os.environ, "DO_NOT_TRACK": "1"})
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"graft ({where}) did not run: {exc}")
+        return
+    got = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else ""
+    if out.returncode != 0 or not got:
+        fail(f"graft ({where}) did not report a version: {out.stderr.strip()[:200]}")
+    elif want and got != want:
+        fail(f"graft ({where}) is {got}, the pin is {want}: make install")
+    else:
+        ok(f"graft ({where}) {got}")
 
 
 def check_llama() -> None:
