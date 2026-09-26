@@ -60,7 +60,7 @@ class Decision:
     chain: List[str]      # rungs in order; a rung listed twice is its one retry. After the last: the user.
 
 
-def _when(ts: float, cfg: dict) -> str:
+def when(ts: float, cfg: dict) -> str:
     return datetime.fromtimestamp(ts, ZoneInfo(cfg["claude"]["week"]["timezone"])).strftime("%a %d %b %H:%M")
 
 
@@ -81,7 +81,7 @@ def decide(verdict: Optional[Verdict], claude: ClaudeState, cfg: dict,
                             ["coder", "claude", "claude"])
         return Decision("claude", f"{seen}; Claude Code is the default", ["claude", "claude"])
 
-    out = f"Claude Code unavailable until {_when(claude.unavailable_until, cfg)}"
+    out = f"Claude Code unavailable until {when(claude.unavailable_until, cfg)}"
     if not cfg["openrouter"]["enabled"]:
         return Decision("coder", f"{seen}; {out} and OpenRouter disabled: the local coder is all that is left",
                         ["coder"])
@@ -97,5 +97,5 @@ def paid_rung(claude: ClaudeState, cfg: dict) -> Tuple[str, str]:
     if claude.available:
         return "claude", "Claude Code is available"
     if cfg["openrouter"]["enabled"]:
-        return "openrouter", f"Claude Code unavailable until {_when(claude.unavailable_until, cfg)}"
+        return "openrouter", f"Claude Code unavailable until {when(claude.unavailable_until, cfg)}"
     return "claude", "Claude Code is locked out and OpenRouter disabled; it will fail until the reset"

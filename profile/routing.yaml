@@ -33,6 +33,10 @@ claude:
     reset_weekday: 0
     reset_hour: 9
     timezone: Europe/Warsaw
+  # A limit error is read for its reset time, and Claude Code is skipped until
+  # then. When the error names no readable time, it is skipped this long; the
+  # next task after that tries again and re-locks if the limit still holds.
+  limit_fallback_s: 3600
   result_chars: 8000
 
 openrouter:

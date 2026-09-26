@@ -34,6 +34,9 @@ DEFAULTS: Dict[str, Any] = {
         "workdir_roots": ["/srv/data/projects"],
         # When the Max week resets; results are grouped by this window.
         "week": {"reset_weekday": 0, "reset_hour": 9, "timezone": "Europe/Warsaw"},
+        # A limit error whose reset time cannot be read locks Claude Code out this long; the next
+        # task after that tries again, and a limit still in force fails fast and re-locks.
+        "limit_fallback_s": 3600,
         "result_chars": 8000,
     },
     "openrouter": {

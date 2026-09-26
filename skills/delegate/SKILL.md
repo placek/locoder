@@ -36,7 +36,7 @@ Call `route(brief, workdir)` once. Keep the `decision_id` and the `chain`. Read 
 ## 3. Run the current rung
 
 - **coder** — `delegate_task(tasks=[{"goal": <brief>}])`. One child at a time; the coder serves a single slot.
-- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, it switches to OpenRouter by itself and says so in `runs`.
+- **claude / openrouter** — `escalate(brief, workdir, decision_id, backend=<rung>)`. It blocks until the run ends. On `claude`, if a Max limit hits mid-run, the result carries `claude_unavailable_until` and a new `chain`: the rest of this task's route with Claude Code locked out. Park whatever the run left behind (step 5.1), record nothing for it, and continue with that `chain` instead of the one `route()` returned.
 
 ## 4. Verify and record — every attempt
 
@@ -58,7 +58,7 @@ After the last rung in the chain, stop. Report to the user what each rung did, t
 
 ## Rules
 
-- Never run `claude` from the terminal. `escalate()` is the only path: it records limit hits so routing avoids Claude Code while it is locked out, falls back on OpenRouter, and writes the ledger.
+- Never run `claude` from the terminal. `escalate()` is the only path: it records limit hits so routing avoids Claude Code while it is locked out, hands back the rest of the chain when one hits, and writes the ledger.
 - Never pick a rung yourself because a task "feels big". If you disagree with `route()`, say so in `route_outcome` notes; the thresholds are tuned from the ledger, and an override leaves no trace there.
 - Never delegate `/ship`, an unscoped "make it work", or the decision that something is done.
 - `routing_status` shows whether Claude Code is available (or locked out, and until when) and this week's per-rung results, when the user asks how things stand.

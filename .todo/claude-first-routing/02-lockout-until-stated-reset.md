@@ -1,6 +1,6 @@
 # 02: Lock Claude Code out only until the reset its limit error states
 
-Status: ready-for-agent
+Status: done
 Blocked by: 01
 
 ## What to build
@@ -23,9 +23,9 @@ The `delegate` skill says so.
 
 ## Acceptance criteria
 
-- [ ] An error stating a reset a few hours ahead locks Claude Code out until that time and no longer; `route()` afterwards returns the "Claude Code out" chains until then, and Claude-first chains after.
-- [ ] Reset times given as a clock time, a date and a relative duration are each parsed (tests use invented but plausible wordings; the real ones replace them once seen).
-- [ ] An error with no readable reset locks out for the configured fallback period.
-- [ ] The raw text of each limit hit is in the ledger.
-- [ ] A mid-run limit hit returns the unavailable-until time and the remaining chain; it does not start an OpenRouter run by itself.
-- [ ] `make test` passes.
+- [x] An error stating a reset a few hours ahead locks Claude Code out until that time and no longer; `route()` afterwards returns the "Claude Code out" chains until then, and Claude-first chains after.
+- [x] Reset times given as a clock time, a date and a relative duration are each parsed (tests use invented but plausible wordings; the real ones replace them once seen).
+- [x] An error with no readable reset locks out for the configured fallback period.
+- [x] The raw text of each limit hit is in the ledger.
+- [x] A mid-run limit hit returns the unavailable-until time and the remaining chain; it does not start an OpenRouter run by itself.
+- [x] `make test` passes.

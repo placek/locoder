@@ -6,7 +6,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from . import backends, policy, settings
-from .judge import Judge, JudgeError, verdict_dict
+from .judge import Judge, JudgeError, Verdict, verdict_dict
 from .ledger import Ledger
 
 _BRIEF = {
@@ -42,10 +42,10 @@ ESCALATE_SCHEMA = {
     "name": "escalate",
     "description": (
         "Run a task on a paid rung: Claude Code (Max subscription) or Claude Code on OpenRouter. "
-        "backend='auto' picks Claude Code while it is available, else OpenRouter, and switches to "
-        "OpenRouter by itself if a Max limit hits mid-run. Blocks until the run ends; returns its "
-        "final report, cost and turn count. The "
-        "report is a claim: run the acceptance check yourself afterwards."
+        "backend='auto' picks Claude Code while it is available, else OpenRouter. Blocks until the run "
+        "ends; returns its final report, cost and turn count. The report is a claim: run the acceptance "
+        "check yourself afterwards. If a Max limit hits mid-run, the result says until when Claude Code "
+        "is locked out and gives the rest of this task's chain to follow instead."
     ),
     "parameters": {
         "type": "object",
@@ -151,28 +151,45 @@ class Router:
         else:
             rung, why = requested, "requested explicitly"
 
-        runs = []
-        while True:
-            try:
-                result = await backends.run(cfg, rung, brief, workdir, args.get("max_turns"))
-            except backends.BackendError as exc:
-                runs.append({"rung": rung, "ok": False, "error": str(exc)})
-                break
-            self.ledger.add_attempt(rung, decision_id, ok=result.ok, limit_hit=result.limit_hit,
-                                    cost=result.cost, turns=result.turns, duration_s=result.duration_s,
-                                    session_id=result.session_id)
-            runs.append(result.as_dict(int(cfg["claude"]["result_chars"])))
-            if not (result.limit_hit and rung == "claude"):
-                break
-            week_start, week_end = policy.week_bounds(now, cfg)
-            self.ledger.add_limit_hit(week_start, self.ledger.claude_spent(week_start), week_end)
-            if requested != "auto" or not cfg["openrouter"]["enabled"]:
-                break
-            rung, why = "openrouter", "Claude Code hit a limit mid-run; retried on OpenRouter"
+        try:
+            result = await backends.run(cfg, rung, brief, workdir, args.get("max_turns"))
+        except backends.BackendError as exc:
+            return _json({"decision_id": decision_id, "backend": rung, "why": why, "ok": False,
+                          "error": str(exc)})
+        self.ledger.add_attempt(rung, decision_id, ok=result.ok, limit_hit=result.limit_hit,
+                                cost=result.cost, turns=result.turns, duration_s=result.duration_s,
+                                session_id=result.session_id)
+        out = {"decision_id": decision_id, "backend": rung, "why": why, "ok": result.ok,
+               "run": result.as_dict(int(cfg["claude"]["result_chars"])),
+               "next": "Run the acceptance check yourself, then call route_outcome."}
+        if result.limit_hit and rung == "claude":
+            until = self._lock_out_claude(result.result, now, cfg)
+            after = policy.decide(self._stored_verdict(decision_id), policy.ClaudeState(until), cfg,
+                                  judge_error="no verdict recorded for this task")
+            out.update(claude_unavailable_until=policy.when(until, cfg), chain=after.chain,
+                       chain_reason=after.reason,
+                       next=("Claude Code hit a limit before finishing; nothing it did counts. Park any "
+                             "changes, then continue with `chain` — the rest of this task's route now that "
+                             "Claude Code is locked out — instead of the chain route() returned."))
+        return _json(out)
 
-        return _json({"decision_id": decision_id, "backend": runs[-1]["rung"], "why": why,
-                      "ok": bool(runs[-1].get("ok")), "runs": runs,
-                      "next": "Run the acceptance check yourself, then call route_outcome."})
+    def _lock_out_claude(self, error_text: str, now: float, cfg: dict) -> float:
+        """Record a limit hit; Claude Code stays unavailable until the reset the error states."""
+        c = cfg["claude"]
+        until = backends.reset_time(error_text, now, c["week"]["timezone"])
+        source = "stated"
+        if until is None:
+            until, source = now + float(c["limit_fallback_s"]), "fallback"
+        week_start, _ = policy.week_bounds(now, cfg)
+        self.ledger.add_limit_hit(until, raw=error_text[:2000], reset_source=source,
+                                  window_start=week_start, spent=self.ledger.claude_spent(week_start))
+        return until
+
+    def _stored_verdict(self, decision_id: Optional[str]) -> Optional[Verdict]:
+        row = self.ledger.decision(decision_id) if decision_id else None
+        if row is None or not row["verdict"]:
+            return None
+        return Verdict(**json.loads(row["verdict"]))
 
     # -- outcome & status -----------------------------------------------------
     def outcome(self, args: Dict[str, Any], **_: Any) -> str:

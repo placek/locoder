@@ -46,10 +46,12 @@ Hermes TUI — for all of it.
   the orchestrator and coder each have a single KV slot: one judge query there
   would evict a 64k-token conversation.
 - **No rationing; limits are handled when they hit.** Claude Code is used
-  until a limit stops it. When one hits mid-run, `escalate()` records it,
-  retries that task on OpenRouter, and routing works around Claude Code until
-  the reset: the coder first when the judge gives it a fair chance, OpenRouter
-  otherwise.
+  until a limit — the short session one or the weekly one — stops it. When
+  one hits mid-run, `escalate()` reads the reset time from the error, locks
+  Claude Code out until then (an hour if the error names no time), and hands
+  the orchestrator the rest of that task's chain: the coder first when the
+  judge gives it a fair chance, OpenRouter otherwise. After the reset, Claude
+  Code is the default again.
 - **Both paid rungs are the same CLI.** OpenRouter serves an
   Anthropic-compatible endpoint, so the OpenRouter rung is `claude -p` with
   `ANTHROPIC_BASE_URL` pointed there (and its own `CLAUDE_CONFIG_DIR`, so the
@@ -163,9 +165,12 @@ Everything is in `profile/routing.yaml` and applies on the next tool call:
 
 - Claude Code's usage is not visible in advance: no documented command reports
   it without a session, so limits are only learned when a run fails on one.
-- Limit hits are detected from Claude Code's error text. If a future CLI words
-  it differently, the run fails as an ordinary error instead of falling back;
-  `LIMIT_PATTERN` in `plugins/locoder/routing/backends.py` is the one place to fix.
+- Limit hits and their reset times are read from Claude Code's error text,
+  whose `-p` wording is undocumented. If a future CLI words it differently,
+  the run fails as an ordinary error instead of falling back, or the reset is
+  unreadable and the lockout is `claude.limit_fallback_s`. Every hit keeps its
+  raw text in the ledger's `limit_hits.raw`; `LIMIT_PATTERN` and
+  `reset_time()` in `plugins/locoder/routing/backends.py` are the place to fix.
 - `escalate()` runs Claude Code on the host (it needs your Max login), with the
   tool allow-list in `routing.yaml` and workdirs restricted to
   `claude.workdir_roots`. The local agent's own commands run in the sandbox.

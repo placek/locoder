@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS limit_hits (
     ts REAL NOT NULL,
     window_start REAL NOT NULL,
     spent REAL NOT NULL,     -- claude cost units spent in the window when the limit hit
-    until REAL NOT NULL      -- next reset; claude is skipped until then
+    until REAL NOT NULL,     -- claude is skipped until then
+    reset_source TEXT,       -- "stated": read from the error; "fallback": unreadable, short lockout
+    raw TEXT                 -- the error text, to fix the limit and reset parsing against
 );
 CREATE INDEX IF NOT EXISTS attempts_ts ON attempts(ts);
 CREATE INDEX IF NOT EXISTS attempts_decision ON attempts(decision_id);
@@ -58,6 +60,7 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         self._add_missing_columns("decisions", {"claude": "TEXT"})
+        self._add_missing_columns("limit_hits", {"reset_source": "TEXT", "raw": "TEXT"})
 
     def _add_missing_columns(self, table: str, columns: Dict[str, str]) -> None:
         """Bring a ledger written by an older version up to the current schema, keeping its rows."""
@@ -112,9 +115,13 @@ class Ledger:
                 )
         return True
 
-    def add_limit_hit(self, window_start: float, spent: float, until: float) -> None:
+    def add_limit_hit(self, until: float, raw: str = "", reset_source: str = "stated",
+                      window_start: float = 0.0, spent: float = 0.0) -> None:
         with self.db:
-            self.db.execute("INSERT INTO limit_hits VALUES (?,?,?,?)", (time.time(), window_start, spent, until))
+            self.db.execute(
+                "INSERT INTO limit_hits (ts, window_start, spent, until, reset_source, raw) VALUES (?,?,?,?,?,?)",
+                (time.time(), window_start, spent, until, reset_source, raw),
+            )
 
     # -- reads --------------------------------------------------------------
     def decision(self, decision_id: str) -> Optional[sqlite3.Row]:

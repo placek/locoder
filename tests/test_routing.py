@@ -169,7 +169,7 @@ def test_paid_rung_is_claude_until_locked_out():
 
 def test_limit_hit_makes_claude_unavailable_until_it_lapses(tmp_path):
     led = Ledger(tmp_path / "l.db")
-    led.add_limit_hit(0, 0, at(2026, 9, 28, 9))
+    led.add_limit_hit(at(2026, 9, 28, 9))
     assert not policy.claude_state(led, at(2026, 9, 26)).available
     assert policy.claude_state(led, at(2026, 9, 28, 10)).available
 
@@ -181,12 +181,18 @@ def test_old_ledger_gains_claude_column_and_keeps_rows(tmp_path):
     old.execute("CREATE TABLE decisions (id TEXT PRIMARY KEY, ts REAL NOT NULL, brief TEXT NOT NULL, workdir TEXT,"
                 " rung TEXT NOT NULL, reason TEXT NOT NULL, verdict TEXT, pace TEXT)")
     old.execute("INSERT INTO decisions VALUES ('a', 1, 'b', NULL, 'coder', 'r', NULL, '{}')")
+    old.execute("CREATE TABLE limit_hits (ts REAL NOT NULL, window_start REAL NOT NULL, spent REAL NOT NULL,"
+                " until REAL NOT NULL)")
+    old.execute("INSERT INTO limit_hits VALUES (1, 0, 5, 2)")
     old.commit()
     old.close()
     led = Ledger(path)
     new_id = led.add_decision("brief", None, "claude", "why", None, {"available": True})
     assert led.decision("a")["rung"] == "coder"
     assert json.loads(led.decision(new_id)["claude"]) == {"available": True}
+    led.add_limit_hit(3, raw="limit", reset_source="fallback")
+    rows = led.db.execute("SELECT until, reset_source, raw FROM limit_hits ORDER BY ts").fetchall()
+    assert [tuple(r) for r in rows] == [(2, None, None), (3, "fallback", "limit")]
 
 
 # -- backends ----------------------------------------------------------------
@@ -195,6 +201,39 @@ def test_parse_detects_limit_hit():
     out = json.dumps({"type": "result", "is_error": True, "result": "Claude usage limit reached. Your limit resets at 9am"})
     r = backends.parse("claude", out, "", 1, 3.0)
     assert r.limit_hit and not r.ok
+
+
+THU_NOON = at(2026, 9, 24, 12)
+
+
+@pytest.mark.parametrize("text, expected", [
+    # Wordings are invented but plausible; replace with real ones from the ledger's raw column.
+    ("Session limit reached ∙ resets 3pm", at(2026, 9, 24, 15)),
+    ("You've hit your limit · resets at 9am", at(2026, 9, 25, 9)),
+    ("Limit reached, resets at 17:30", datetime(2026, 9, 24, 17, 30, tzinfo=ZoneInfo(TZ)).timestamp()),
+    ("You've hit your weekly usage limit. Resets Monday 9am", at(2026, 9, 28, 9)),
+    ("Weekly limit reached ∙ resets Sep 28, 1pm", at(2026, 9, 28, 13)),
+    ("Usage limit reached. Resets in 2h 30m", THU_NOON + 2.5 * 3600),
+    ("5-hour limit reached, resets in 45 minutes", THU_NOON + 45 * 60),
+    ("Claude AI usage limit reached|1790260000", 1790260000.0),
+])
+def test_reset_time_reads_clock_date_and_relative_forms(text, expected):
+    assert backends.reset_time(text, THU_NOON, TZ) == pytest.approx(expected)
+
+
+def test_reset_time_honours_a_timezone_named_in_the_error():
+    got = backends.reset_time("Session limit reached ∙ resets 3pm (UTC)", THU_NOON, TZ)
+    assert got == datetime(2026, 9, 24, 15, tzinfo=ZoneInfo("UTC")).timestamp()
+
+
+@pytest.mark.parametrize("text", [
+    "Usage limit reached.",
+    "Claude AI usage limit reached|1000000000",      # in the past
+    "Weekly limit reached ∙ resets Dec 24, 1pm",     # months away: not a limit reset
+    "limit reached, resets 3",                       # no minutes or am/pm: too ambiguous
+])
+def test_reset_time_unreadable_is_none(text):
+    assert backends.reset_time(text, THU_NOON, TZ) is None
 
 
 def test_parse_success_reads_cost_and_turns():
@@ -239,6 +278,9 @@ else:
     if mode == "limit":
         print(json.dumps({"is_error": True, "result": "You've hit your weekly usage limit. Resets Monday 9am"}))
         sys.exit(1)
+    if mode == "limit-no-reset":
+        print(json.dumps({"is_error": True, "result": "Usage limit reached."}))
+        sys.exit(1)
     print(json.dumps({"is_error": False, "result": "done via max", "total_cost_usd": 2.5, "num_turns": 9}))
 """
 
@@ -265,8 +307,8 @@ def router(tmp_path, monkeypatch):
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
             openrouter={"config_dir": str(tmp_path / "cc")})
-    state = {"verdict": verdict(0.9, 0.5)}
-    r = Router(clock=lambda: at(2026, 9, 24), judge_factory=lambda _c: FakeJudge(state["verdict"]),
+    state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24)}
+    r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c)
     r.test = {"mode": mode, "proj": str(tmp_path / "proj"), "state": state}
     return r
@@ -291,18 +333,53 @@ def test_escalate_runs_claude_and_records_cost(router):
     d = call(router.route, brief="big feature", workdir=router.test["proj"])
     assert d["rung"] == "claude"
     r = call(router.escalate, brief="big feature", workdir=router.test["proj"], decision_id=d["decision_id"])
-    assert r["ok"] and r["backend"] == "claude" and r["runs"][0]["cost"] == 2.5
+    assert r["ok"] and r["backend"] == "claude" and r["run"]["cost"] == 2.5
     assert router.ledger.claude_spent(0) == 2.5
 
 
-def test_limit_hit_mid_run_falls_back_to_openrouter_and_blocks_claude(router):
+def test_limit_hit_mid_run_hands_back_the_locked_out_chain(router):
+    router.test["state"]["verdict"] = verdict(0.4, 1.8)
+    d = call(router.route, brief="medium task", workdir=router.test["proj"])
+    assert d["rung"] == "claude"
+    router.test["mode"].write_text("limit")
+    r = call(router.escalate, brief="medium task", workdir=router.test["proj"], decision_id=d["decision_id"])
+    assert not r["ok"] and r["backend"] == "claude"
+    assert r["chain"] == ["coder", "openrouter"]
+    assert r["claude_unavailable_until"] == "Mon 28 Sep 09:00"
+    assert router.ledger.db.execute("SELECT COUNT(*) FROM attempts WHERE rung='openrouter'").fetchone()[0] == 0
+
+
+def test_lockout_lasts_until_the_stated_reset_and_no_longer(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    router.test["state"]["verdict"] = verdict(0.1, 2.9)
+    assert call(router.route, brief="hard task")["rung"] == "openrouter"
+    assert call(router.status)["claude"]["available"] is False
+    router.test["state"]["now"] = at(2026, 9, 28, 9) + 60
+    assert call(router.route, brief="hard task")["rung"] == "claude"
+
+
+def test_escalate_without_a_decision_treats_the_rest_as_pessimistic(router):
     router.test["mode"].write_text("limit")
     r = call(router.escalate, brief="task", workdir=router.test["proj"])
-    assert [run["rung"] for run in r["runs"]] == ["claude", "openrouter"]
-    assert r["backend"] == "openrouter" and r["ok"]
-    router.test["state"]["verdict"] = verdict(0.1, 2.9)
-    assert call(router.route, brief="another hard task")["rung"] == "openrouter"
-    assert call(router.status)["claude"]["available"] is False
+    assert r["chain"] == ["openrouter"]
+
+
+def test_unreadable_reset_locks_out_for_the_fallback_period_and_keeps_the_text(router):
+    router.test["mode"].write_text("limit-no-reset")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    hit = router.ledger.db.execute("SELECT until, reset_source, raw FROM limit_hits").fetchone()
+    assert hit["until"] == pytest.approx(at(2026, 9, 24) + 3600)
+    assert hit["reset_source"] == "fallback" and hit["raw"] == "Usage limit reached."
+    router.test["state"]["now"] = at(2026, 9, 24) + 3601
+    assert call(router.status)["claude"]["available"] is True
+
+
+def test_stated_reset_is_recorded_with_its_text(router):
+    router.test["mode"].write_text("limit")
+    call(router.escalate, brief="task", workdir=router.test["proj"])
+    hit = router.ledger.db.execute("SELECT reset_source, raw FROM limit_hits").fetchone()
+    assert hit["reset_source"] == "stated" and "Resets Monday 9am" in hit["raw"]
 
 
 def test_route_with_judge_down_still_decides(router):

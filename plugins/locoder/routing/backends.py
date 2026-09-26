@@ -14,16 +14,94 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# What Claude Code prints when the subscription window is used up. Deliberately broad: a false
-# positive only sends one task to OpenRouter early, a miss burns the rest of the week in errors.
+# What Claude Code prints when a subscription limit is used up. Deliberately broad: a false
+# positive only locks Claude Code out briefly, a miss fails every task until the reset.
 LIMIT_PATTERN = re.compile(
     r"(usage|rate|weekly|session)[ -]limit|limit (reached|exceeded|hit)|out of (extra )?usage|"
-    r"resets? (at|on|in) ",
+    r"hit your (\w+ )?limit|resets? (at|on|in) ",
     re.IGNORECASE,
 )
+
+# The `-p` wording of the reset time is undocumented; these cover the shapes seen in the
+# interactive CLI. Every limit hit keeps its raw text in the ledger, so a new shape can be
+# added here from a real error.
+_EPOCH = re.compile(r"limit reached\|(\d{10})", re.IGNORECASE)
+_RELATIVE = re.compile(
+    r"resets?\s+in\s+(?:(?P<d>\d+)\s*(?:d|days?)\b\s*)?(?:(?P<h>\d+)\s*(?:h|hrs?|hours?)\b\s*)?"
+    r"(?:(?P<m>\d+)\s*(?:m|mins?|minutes?)\b)?",
+    re.IGNORECASE,
+)
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_ABSOLUTE = re.compile(
+    r"resets?\s+(?:at\s+|on\s+)?"
+    rf"(?:(?P<wd>{'|'.join(_WEEKDAYS)})[a-z]*,?\s+|(?P<mon>{'|'.join(_MONTHS)})[a-z]*\.?\s+(?P<day>\d{{1,2}}),?\s+)?"
+    r"(?:at\s+)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?",
+    re.IGNORECASE,
+)
+_TZ_IN_TEXT = re.compile(r"\((UTC|[A-Za-z]+(?:/[A-Za-z0-9_+-]+)+)\)")
+_MAX_LOCKOUT_S = 8 * 24 * 3600
+
+
+def reset_time(text: str, now: float, default_tz: str) -> Optional[float]:
+    """When a limit error says the limit resets (epoch seconds), or None if it does not say.
+
+    Clock times without a date mean their next occurrence; anything that is not in the
+    future, or more than about a week out, is treated as unreadable.
+    """
+    found = _parse_reset(text, now, default_tz)
+    if found is None or not now < found <= now + _MAX_LOCKOUT_S:
+        return None
+    return found
+
+
+def _parse_reset(text: str, now: float, default_tz: str) -> Optional[float]:
+    m = _EPOCH.search(text)
+    if m:
+        return float(m.group(1))
+    m = _RELATIVE.search(text)
+    if m and any(m.group(k) for k in ("d", "h", "m")):
+        return now + sum(int(m.group(k) or 0) * s for k, s in (("d", 86400), ("h", 3600), ("m", 60)))
+    m = _ABSOLUTE.search(text)
+    if not m or (m.group("minute") is None and m.group("ampm") is None):
+        return None
+    tz_match = _TZ_IN_TEXT.search(text)
+    try:
+        zone = ZoneInfo(tz_match.group(1) if tz_match else default_tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo(default_tz)
+    hour, minute = int(m.group("hour")), int(m.group("minute") or 0)
+    ampm = (m.group("ampm") or "").lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    local_now = datetime.fromtimestamp(now, zone)
+    if m.group("mon"):
+        month = _MONTHS.index(m.group("mon").lower()[:3]) + 1
+        try:
+            at = local_now.replace(month=month, day=int(m.group("day")), hour=hour, minute=minute,
+                                   second=0, microsecond=0)
+        except ValueError:
+            return None
+        if at < local_now - timedelta(days=1):
+            at = at.replace(year=at.year + 1)
+        return at.timestamp()
+    at = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if m.group("wd"):
+        at += timedelta(days=(_WEEKDAYS.index(m.group("wd").lower()[:3]) - local_now.weekday()) % 7)
+        if at <= local_now:
+            at += timedelta(days=7)
+    elif at <= local_now:
+        at += timedelta(days=1)
+    return at.timestamp()
 
 # Variables that would silently switch the Max path to pay-per-token API billing or to
 # another endpoint. Stripped for the subscription rung, set explicitly for the OpenRouter one.
