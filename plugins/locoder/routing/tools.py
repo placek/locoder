@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from . import backends, graft, policy, settings
-from .judge import Judge, JudgeError, Verdict, verdict_dict
+from .judge import Judge, JudgeError, SemIfBackend, Verdict, verdict_dict
 from .ledger import Ledger
 
 _BRIEF = {
@@ -162,8 +162,8 @@ class Router:
                  conversation_root: Callable[[str], str] = hermes_conversation_root):
         self.clock = clock
         self._ledger = ledger
-        self._judge_factory = judge_factory or (lambda cfg: Judge(
-            cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"]))
+        self._judge_factory = judge_factory or (lambda cfg: Judge(SemIfBackend(
+            cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"])))
         self._load = config_loader
         self._conversation_root = conversation_root
         # Keyed by conversation root; a conversation never switched is "auto".

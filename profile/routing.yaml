@@ -20,6 +20,11 @@ policy:
   # While a limit has Claude Code locked out, the coder is tried before
   # OpenRouter when P(coder finishes) >= fallback_threshold.
   fallback_threshold: 0.3
+  # The share of the judge's probability mass that must land on an allowed
+  # answer for its verdict to count. Below it the verdict is a guess, and the
+  # task routes as if the judge were down (Claude Code first). `make check`
+  # warns when the judge model falls under it on its sanity question.
+  min_coverage: 0.5
 
 claude:
   bin: claude

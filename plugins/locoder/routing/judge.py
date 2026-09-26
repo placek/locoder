@@ -1,70 +1,87 @@
-"""The judge: two typed questions answered from next-token probabilities, not generated text.
+"""The judge: typed questions about a brief, answered as probabilities instead of text.
 
-Same trick as SemIf: ask a small local model a question whose answer is one token, request
-``max_tokens=1`` with ``top_logprobs``, and read the probability of each allowed answer. One
-prefill per question, no decoding, no parsing of prose. The model is the ``judge`` preset of
-the llama.cpp router — a small CPU-only model, so asking never evicts the orchestrator's or
-the coder's KV cache (both run with a single slot).
+The interface is the one "System One" decision models share — TypeSafe's Jev and the open
+CLM-8B: a *state* (the text being judged) plus typed questions, each answered with a
+distribution rather than prose.
+
+- ``Noul``   — is this statement true?            → P(yes)
+- ``Choice`` — which of these named options?      → a distribution over the names
+- ``Score``  — where on this 0..9 rubric?         → a distribution over the scores
+
+A backend implements ``system_one(state, questions)``. The one here, ``SemIfBackend``, is the
+SemIf trick on a small local model: each question becomes a prompt whose answer is a single
+token, requested with ``max_tokens=1`` and ``top_logprobs``, and the probability of each
+allowed token is read off. It runs on the ``judge`` preset of the llama.cpp router, CPU-only,
+so asking never evicts the orchestrator's or the coder's single KV slot. A Jev or CLM backend
+would be another class with the same method.
+
+Every answer carries *coverage*: the share of the model's probability mass that landed on an
+allowed answer. The distribution is renormalised over the allowed answers, so coverage is the
+only sign that the model mostly wanted to say something else.
 """
 from __future__ import annotations
 
 import json
 import math
+import string
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
-
-SYSTEM = (
-    "You are the routing judge for a coding agent. You read a task brief and answer the "
-    "question with exactly one character. No explanation."
-)
-
-DIFFICULTY_Q = (
-    "The task below would be done by a small local coding model (3B active parameters, 128k "
-    "context, can read files, edit, run tests, at most 60 steps, no human help).\n"
-    "How hard is it for that model?\n"
-    "0 = trivial: one small, obvious edit\n"
-    "1 = routine: a contained change in one module, clear acceptance check\n"
-    "2 = demanding: several files, design judgement, or unfamiliar APIs\n"
-    "3 = heavy: a large feature, a wide refactor, or a deep debugging trace\n"
-    "Answer with one digit."
-)
-
-LOCAL_Q = (
-    "The task below would be done by a small local coding model (3B active parameters, 128k "
-    "context, can read files, edit, run tests, at most 60 steps, no human help).\n"
-    "Will that model finish it correctly, with its acceptance check passing?\n"
-    "Answer Y or N."
-)
-
-DIFFICULTY_OPTIONS = ("0", "1", "2", "3")
-LOCAL_OPTIONS = ("Y", "N")
+from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
 
 class JudgeError(RuntimeError):
     """The judge could not be asked or gave no usable distribution."""
 
 
+# -- typed questions ----------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Noul:
+    instructions: str
+
+
+@dataclass(frozen=True)
+class Choice:
+    instructions: str
+    criteria: Mapping[str, str]          # option name -> what it means
+
+
+@dataclass(frozen=True)
+class Score:
+    instructions: str
+    scale: Mapping[int, str]             # 0..9 -> what the score means
+
+
+Question = Union[Noul, Choice, Score]
+
+
 @dataclass
 class Answer:
-    probs: Dict[str, float]
-    # Share of the model's top-k probability mass that landed on an allowed option.
-    # Low coverage means the model wanted to say something else: treat the answer as a guess.
+    probs: Dict[str, float]              # Noul: "yes"/"no"; Choice: option names; Score: "0".."9"
     coverage: float
 
+    @property
+    def p_yes(self) -> float:
+        return self.probs["yes"]
 
-@dataclass
-class Verdict:
-    p_local: float
-    difficulty: Dict[str, float]
-    expected_difficulty: float
-    coverage: float
-    raw: Dict[str, Answer] = field(default_factory=dict)
+    @property
+    def expected(self) -> float:
+        return sum(int(k) * p for k, p in self.probs.items())
+
+
+class Backend(Protocol):
+    def system_one(self, state: str, questions: Mapping[str, Question]) -> Dict[str, Answer]: ...
+
+
+# -- SemIf: one-token answers read from a local model's logprobs ----------------------
+
+SYSTEM = ("You judge the text inside <state> and answer the question with exactly one "
+          "character. No explanation.")
 
 
 def distribution(top_logprobs: Sequence[dict], options: Sequence[str]) -> Answer:
-    """Fold a top-k list into a distribution over *options*.
+    """Fold a top-k list into a distribution over *options* (single-token answers).
 
     Tokens are matched after stripping whitespace and case, so " Y", "y" and "Y" all count
     toward "Y" — tokenizers split the same answer in several ways.
@@ -90,19 +107,42 @@ def distribution(top_logprobs: Sequence[dict], options: Sequence[str]) -> Answer
     )
 
 
-class Judge:
+def render(question: Question) -> Tuple[str, Dict[str, str]]:
+    """The prompt for *question*, and which answer token stands for which answer name."""
+    if isinstance(question, Noul):
+        return f"{question.instructions}\nAnswer Y or N.", {"Y": "yes", "N": "no"}
+    if isinstance(question, Score):
+        if not question.scale or any(not 0 <= k <= 9 for k in question.scale):
+            raise ValueError("a Score scale is 0..9: one digit per score")
+        lines = "\n".join(f"{k} = {v}" for k, v in sorted(question.scale.items()))
+        return (f"{question.instructions}\n{lines}\nAnswer with one digit.",
+                {str(k): str(k) for k in question.scale})
+    if isinstance(question, Choice):
+        if not 0 < len(question.criteria) <= 26:
+            raise ValueError("a Choice has 1..26 options: one letter per option")
+        letters = dict(zip(string.ascii_uppercase, question.criteria))
+        lines = "\n".join(f"{letter} = {name}: {question.criteria[name]}" for letter, name in letters.items())
+        return f"{question.instructions}\n{lines}\nAnswer with one letter.", letters
+    raise TypeError(f"not a question: {question!r}")
+
+
+class SemIfBackend:
     def __init__(self, base_url: str, model: str, timeout_s: float = 30, opener=None):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model = model
         self.timeout_s = timeout_s
         self._open = opener or urllib.request.urlopen
 
-    def ask(self, question: str, brief: str, options: Sequence[str]) -> Answer:
+    def system_one(self, state: str, questions: Mapping[str, Question]) -> Dict[str, Answer]:
+        return {name: self._ask(state, question) for name, question in questions.items()}
+
+    def _ask(self, state: str, question: Question) -> Answer:
+        prompt, tokens = render(question)
         body = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": f"{question}\n\n<brief>\n{brief.strip()}\n</brief>"},
+                {"role": "user", "content": f"{prompt}\n\n<state>\n{state.strip()}\n</state>"},
             ],
             "max_tokens": 1,
             "temperature": 0,
@@ -112,12 +152,8 @@ class Judge:
             # through to the chat template. Harmless for templates that ignore it.
             "chat_template_kwargs": {"enable_thinking": False},
         }
-        req = urllib.request.Request(
-            self.url,
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        req = urllib.request.Request(self.url, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
         try:
             with self._open(req, timeout=self.timeout_s) as resp:
                 payload = json.loads(resp.read().decode())
@@ -127,18 +163,51 @@ class Judge:
             top = payload["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
         except (KeyError, IndexError, TypeError) as exc:
             raise JudgeError("judge response carried no logprobs; is the server llama.cpp?") from exc
-        return distribution(top, options)
+        folded = distribution(top, list(tokens))
+        return Answer(probs={tokens[t]: p for t, p in folded.probs.items()}, coverage=folded.coverage)
+
+
+# -- the routing judge ----------------------------------------------------------------
+
+# Who the questions are about: the coder preset. Keep in step with llama/presets.ini.
+WORKER = ("a small local coding model (3B active parameters, 128k context, can read files, "
+          "edit, run tests, at most 60 steps, no human help)")
+
+QUESTIONS: Dict[str, Question] = {
+    "difficulty": Score(
+        f"The task below would be done by {WORKER}.\nHow hard is it for that model?",
+        {0: "trivial: one small, obvious edit",
+         1: "routine: a contained change in one module, clear acceptance check",
+         2: "demanding: several files, design judgement, or unfamiliar APIs",
+         3: "heavy: a large feature, a wide refactor, or a deep debugging trace"}),
+    "local": Noul(
+        f"The task below would be done by {WORKER}.\n"
+        "Will that model finish it correctly, with its acceptance check passing?"),
+}
+
+
+@dataclass
+class Verdict:
+    p_local: float
+    difficulty: Dict[str, float]
+    expected_difficulty: float
+    coverage: float                      # the lower of the two answers' coverage
+    raw: Dict[str, Answer] = field(default_factory=dict)
+
+
+class Judge:
+    def __init__(self, backend: Backend):
+        self.backend = backend
 
     def judge(self, brief: str) -> Verdict:
-        diff = self.ask(DIFFICULTY_Q, brief, DIFFICULTY_OPTIONS)
-        local = self.ask(LOCAL_Q, brief, LOCAL_OPTIONS)
-        expected = sum(int(k) * p for k, p in diff.probs.items())
+        a = self.backend.system_one(brief, QUESTIONS)
+        diff, local = a["difficulty"], a["local"]
         return Verdict(
-            p_local=local.probs["Y"],
+            p_local=local.p_yes,
             difficulty=diff.probs,
-            expected_difficulty=expected,
+            expected_difficulty=diff.expected,
             coverage=min(diff.coverage, local.coverage),
-            raw={"difficulty": diff, "local": local},
+            raw=a,
         )
 
 
@@ -153,4 +222,5 @@ def verdict_dict(v: Optional[Verdict]) -> Optional[dict]:
     }
 
 
-__all__: List[str] = ["Judge", "JudgeError", "Verdict", "Answer", "distribution", "verdict_dict"]
+__all__: List[str] = ["Answer", "Backend", "Choice", "Judge", "JudgeError", "Noul", "QUESTIONS",
+                      "Score", "SemIfBackend", "Verdict", "distribution", "render", "verdict_dict"]
