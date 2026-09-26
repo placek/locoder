@@ -24,6 +24,9 @@ DEFAULTS: Dict[str, Any] = {
         "local_max_difficulty": 0.5,
         # While Claude Code is locked out: the coder is tried before OpenRouter at or above this P.
         "fallback_threshold": 0.3,
+        # A verdict whose answers got less than this share of the judge's probability mass is a
+        # guess (the model wanted to say something else) and is treated as no verdict at all.
+        "min_coverage": 0.5,
     },
     "claude": {
         "bin": "claude",

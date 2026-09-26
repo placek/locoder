@@ -165,7 +165,7 @@ def check_llama() -> None:
     print("llama.cpp router")
     sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "locoder"))
     from routing import settings
-    from routing.judge import Judge, JudgeError
+    from routing.judge import Judge, JudgeError, SemIfBackend
 
     cfg = settings.load()
     base = cfg["llama"]["base_url"].rstrip("/")
@@ -180,15 +180,15 @@ def check_llama() -> None:
     if "judge" in missing:
         return
     try:
-        v = Judge(base, cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"]).judge(
+        v = Judge(SemIfBackend(base, cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"])).judge(
             "Goal: fix the typo 'recieve' in README.md.\nAcceptance: grep -q receive README.md\n"
             "Constraints: touch nothing else.")
     except JudgeError as exc:
         fail(f"judge: {exc}")
         return
     line = f"judge: P(local)={v.p_local:.2f}, difficulty≈{v.expected_difficulty:.2f}, coverage={v.coverage:.2f}"
-    if v.coverage < 0.5:
-        warn(line + " — low coverage: the judge model rarely answers in the allowed tokens; try another model")
+    if v.coverage < float(cfg["policy"]["min_coverage"]):
+        warn(line + " — below policy.min_coverage: route() would ignore this verdict; try another judge model")
     elif v.p_local < 0.5:
         warn(line + " — it doubts the coder on a one-word typo fix; its scale may need other thresholds")
     else:

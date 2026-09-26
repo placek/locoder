@@ -47,12 +47,22 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   failing check output before the task comes back to you. A wrong "coder" is
   cheap: the chain moves on to Claude Code. The ledger shows when the
   thresholds need moving (`make report`).
-- **The judge reads probabilities, not prose.** It asks one-token questions
-  with `max_tokens=1` and `top_logprobs`, and reads the probability of each
-  allowed answer (the SemIf trick). It runs as its own CPU-only preset because
-  the orchestrator and coder each have a single KV slot: one judge query there
-  would evict a 64k-token conversation. If the judge is unreachable, the task
-  starts on Claude Code.
+- **The judge reads probabilities, not prose.** It asks typed questions about
+  the brief, in the interface "System One" decision models share (TypeSafe's
+  Jev, the open CLM-8B): a `Noul` (will the coder finish? → P(yes)) and a
+  `Score` (difficulty 0–3 → a distribution). Its backend is the SemIf trick on
+  a small local model: each question becomes a one-token prompt, sent with
+  `max_tokens=1` and `top_logprobs`, and the probability of each allowed
+  answer is read off. It runs as its own CPU-only preset because the
+  orchestrator and coder each have a single KV slot: one judge query there
+  would evict a 64k-token conversation. A Jev or CLM backend would be another
+  class with the same `system_one(state, questions)` method
+  (`plugins/locoder/routing/judge.py`).
+- **A guessing judge is ignored.** Each answer carries *coverage*, the share of
+  the judge's probability mass that landed on an allowed answer. Below
+  `policy.min_coverage` (0.5) the verdict is recorded but routing treats it as
+  no verdict, exactly as when the judge is unreachable: the task starts on
+  Claude Code (or, while Claude Code is locked out, on OpenRouter).
 - **No rationing; limits are handled when they hit.** Claude Code is used
   until a limit — the short session one or the weekly one — stops it. When
   one hits mid-run, `escalate()` reads the reset time from the error, locks
@@ -296,6 +306,10 @@ restart:
   it is given.
 - `policy.fallback_threshold` (0.3) — while Claude Code is locked out, the
   P(local) at which the coder is tried before OpenRouter.
+- `policy.min_coverage` (0.5) — how much of the judge's probability mass must
+  land on its allowed answers for the verdict to count. Raise it if `make
+  report` shows low-coverage verdicts routing badly; lower it (or change the
+  judge model) if `route()` keeps saying the verdict was ignored.
 - `openrouter.model` — what runs when Claude Code is out and the coder is not;
   pick it with the bake-off below.
 
@@ -416,6 +430,7 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | `policy.local_threshold` | 0.85 | P(local) for the coder to go first |
 | `policy.local_max_difficulty` | 0.5 | and expected difficulty (0–3) at most this |
 | `policy.fallback_threshold` | 0.3 | P(local) for the coder to go first while Claude Code is locked out |
+| `policy.min_coverage` | 0.5 | a verdict whose answers got less of the judge's probability mass is ignored |
 | `claude.bin` | `claude` | the Claude Code CLI |
 | `claude.max_turns` | 15 | `--max-turns` per run |
 | `claude.timeout_s` | 1800 | per run |
@@ -486,6 +501,7 @@ Invoke any of them as `/<name>`.
 | the OpenRouter rung exits 1 with "Refusing this startup model override in non-interactive mode" | the model tripped Hermes' cost guard (over $20/M input or $100/M output) or is a data-training tier; pick a cheaper model, or for `:free` tiers set `security.allow_data_training_tiers_noninteractive: true` in `config.yaml` |
 | `make check` warns `locoder not on PATH` | the OpenRouter rung cannot start; add `~/.local/bin` to PATH or set `openrouter.hermes_bin` to the wrapper's full path |
 | OpenRouter attempts show cost 0 and `cost_status: unknown` | the model id is an alias OpenRouter's price list does not have; use a concrete id |
+| the reason says the judge's coverage is below `policy.min_coverage` | the judge model mostly answers outside the allowed tokens: try another small instruct model as `judge.gguf` (`make check` warns on it), or lower `policy.min_coverage` |
 | every task starts on Claude Code and the reason says "judge unavailable" | the judge preset is down or `judge.gguf` is missing; `make status`, `make check` |
 | Claude Code is skipped although its limit has reset | the lockout came from the fallback or a misread reset; see [handle a Claude Code limit](#handle-a-claude-code-limit) |
 | a skill does not show up in `locoder skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |

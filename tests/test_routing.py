@@ -11,7 +11,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from routing import backends, policy, settings
-from routing.judge import Judge, JudgeError, Verdict, distribution
+from routing.judge import (Answer, Choice, Judge, JudgeError, Noul, Score, SemIfBackend, Verdict,
+                           distribution, render)
 from routing.ledger import Ledger
 from routing.tools import Router, register
 
@@ -57,6 +58,9 @@ class FakeLlama(BaseHTTPRequestHandler):
         if "one digit" in question:
             top = [{"token": "1", "logprob": lp(0.6)}, {"token": "2", "logprob": lp(0.3)},
                    {"token": "0", "logprob": lp(0.1)}]
+        elif "one letter" in question:
+            top = [{"token": " B", "logprob": lp(0.5)}, {"token": "A", "logprob": lp(0.3)},
+                   {"token": "Sure", "logprob": lp(0.2)}]
         else:
             top = [{"token": "Y", "logprob": lp(0.8)}, {"token": "N", "logprob": lp(0.2)}]
         payload = {"choices": [{"logprobs": {"content": [{"token": top[0]["token"], "top_logprobs": top}]}}]}
@@ -81,7 +85,7 @@ def llama():
 
 
 def test_judge_asks_two_one_token_questions(llama):
-    v = Judge(llama, "judge").judge("Fix the typo in README.md; check: grep -q 'receive' README.md")
+    v = Judge(SemIfBackend(llama, "judge")).judge("Fix the typo in README.md; check: grep -q 'receive' README.md")
     assert v.p_local == pytest.approx(0.8)
     assert v.expected_difficulty == pytest.approx(0.6 * 1 + 0.3 * 2)
     assert len(FakeLlama.requests) == 2
@@ -92,7 +96,36 @@ def test_judge_asks_two_one_token_questions(llama):
 
 def test_judge_unreachable_raises_judge_error():
     with pytest.raises(JudgeError):
-        Judge("http://127.0.0.1:9/v1", "judge", timeout_s=1).judge("x")
+        Judge(SemIfBackend("http://127.0.0.1:9/v1", "judge", timeout_s=1)).judge("x")
+
+
+def test_render_gives_each_question_type_single_token_answers():
+    prompt, tokens = render(Noul("Is it urgent?"))
+    assert prompt.endswith("Answer Y or N.") and tokens == {"Y": "yes", "N": "no"}
+    prompt, tokens = render(Score("How hard?", {0: "trivial", 3: "heavy"}))
+    assert "0 = trivial\n3 = heavy" in prompt and prompt.endswith("one digit.") and tokens == {"0": "0", "3": "3"}
+    prompt, tokens = render(Choice("Which team?", {"billing": "charges", "support": "the rest"}))
+    assert "A = billing: charges\nB = support: the rest" in prompt and tokens == {"A": "billing", "B": "support"}
+    with pytest.raises(ValueError):
+        render(Score("x", {10: "too many digits"}))
+
+
+def test_semif_answers_a_choice_by_option_name(llama):
+    a = SemIfBackend(llama, "judge").system_one("my invoice was charged twice",
+                                                {"team": Choice("Which team?", {"billing": "charges", "support": "rest"})})
+    assert a["team"].probs == pytest.approx({"billing": 0.3 / 0.8, "support": 0.5 / 0.8})   # A, B
+    assert a["team"].coverage == pytest.approx(0.8)
+
+
+def test_any_backend_with_system_one_can_judge():
+    class Canned:
+        def system_one(self, state, questions):
+            assert set(questions) == {"difficulty", "local"} and "typo" in state
+            return {"difficulty": Answer({"0": 0.5, "1": 0.5}, coverage=0.9),
+                    "local": Answer({"yes": 0.8, "no": 0.2}, coverage=0.7)}
+
+    v = Judge(Canned()).judge("fix a typo")
+    assert v.p_local == 0.8 and v.expected_difficulty == 0.5 and v.coverage == 0.7
 
 
 # -- policy ------------------------------------------------------------------
@@ -108,8 +141,8 @@ def test_window_before_reset_hour_belongs_to_previous_week():
     assert datetime.fromtimestamp(start, ZoneInfo(TZ)).day == 14
 
 
-def verdict(p_local, expected):
-    return Verdict(p_local=p_local, difficulty={}, expected_difficulty=expected, coverage=1.0)
+def verdict(p_local, expected, coverage=1.0):
+    return Verdict(p_local=p_local, difficulty={}, expected_difficulty=expected, coverage=coverage)
 
 
 AVAILABLE = policy.ClaudeState(unavailable_until=None)
@@ -155,6 +188,15 @@ def test_judge_down_starts_on_claude():
 def test_judge_down_while_locked_out_is_treated_as_pessimistic():
     d = policy.decide(None, LOCKED_OUT, cfg(), judge_error="connection refused")
     assert d.rung == "openrouter"
+
+
+def test_low_coverage_verdict_is_treated_as_no_verdict():
+    d = policy.decide(verdict(0.95, 0.1, coverage=0.3), AVAILABLE, cfg())
+    assert d.rung == "claude" and "coverage 0.30 is below policy.min_coverage" in d.reason
+    d = policy.decide(verdict(0.95, 0.1, coverage=0.3), LOCKED_OUT, cfg())
+    assert d.rung == "openrouter"
+    assert policy.decide(verdict(0.95, 0.1, coverage=0.5), AVAILABLE, cfg()).rung == "coder"
+    assert policy.decide(verdict(0.95, 0.1, coverage=0.3), AVAILABLE, cfg(policy={"min_coverage": 0.2})).rung == "coder"
 
 
 def test_thresholds_come_from_config():

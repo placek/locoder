@@ -75,6 +75,11 @@ def decide(verdict: Optional[Verdict], claude: ClaudeState, cfg: dict,
         seen = f"judge unavailable ({judge_error})"
     else:
         seen = f"judge: P(local finishes)={verdict.p_local:.2f}, difficulty≈{verdict.expected_difficulty:.1f}"
+        if verdict.coverage < float(pol["min_coverage"]):
+            # The answers were renormalised over mass the model mostly put elsewhere: a guess.
+            seen += (f", but coverage {verdict.coverage:.2f} is below policy.min_coverage, "
+                     "so it is treated as no verdict")
+            verdict = None
 
     if mode == "local":
         return Decision("coder", f"routing mode local forces the coder, with no retry ({seen})", ["coder"])
