@@ -1,5 +1,5 @@
 [Unit]
-Description=locoder: Julia-1 shadow judge (CPU)
+Description=locoder: Julia-1 judge (CPU)
 Documentation=file://@REPO@/README.md
 
 [Service]

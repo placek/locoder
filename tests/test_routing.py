@@ -412,7 +412,7 @@ def router(tmp_path, monkeypatch):
     r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c,
                conversation_root=lambda sid: state["roots"].get(sid, sid),
-               shadow_factory=lambda _c: FakeJudge(state["shadow"]))
+               shadow_factory=lambda _c: FakeJudge(state["shadow"]), shadow_runner=lambda job: job())
     r.test = {"mode": mode, "hermes_mode": hermes_mode, "argv": tmp_path / "hermes-argv",
               "proj": str(tmp_path / "proj"), "state": state}
     return r

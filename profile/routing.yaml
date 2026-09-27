@@ -47,13 +47,19 @@ claude:
   limit_fallback_s: 3600
   result_chars: 8000
 
-# A second judge, asked on every route() after the real one and recorded in the ledger
-# beside it. It never changes a decision: `make report` scores both against the tasks that
-# were labelled, and the better one is switched in by hand. Julia-1, served on the CPU by
-# the locoder-julia container (julia/). If it is down, route() records the error and moves on.
-shadow_judge:
-  enabled: true
-  backend: julia
+# Two judges are built in:
+#   semif: llama.judge_model above, a small chat model read through its logprobs;
+#   julia: Julia-1, a decision model on the CPU (the locoder-julia service, julia/).
+# `backend` routes. `shadow` is asked too, after the decision, and only recorded: it never
+# changes a decision or slows route() down, and if it is down the ledger records the error.
+# `make report` scores both against the tasks that passed or failed. To switch, swap the two
+# values (read on the next routing call), then retune the policy thresholds: a new judge has
+# a new scale. `shadow: none` asks only one. `make test` refuses a shadow equal to the backend.
+judge:
+  backend: semif
+  shadow: julia
+
+julia:
   base_url: http://127.0.0.1:8089
   timeout_s: 5
 

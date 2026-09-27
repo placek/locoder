@@ -12,7 +12,8 @@ from routing import settings
 from routing.judge import (QUESTIONS, Choice, Judge, JudgeError, JuliaBackend, Noul, Score, Verdict,
                            julia_question)
 from routing.ledger import Ledger
-from routing.tools import Router, shadow_judge
+from routing import tools
+from routing.tools import Router
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -170,10 +171,11 @@ class Fixed:
         return self.v
 
 
-def make_router(tmp_path, shadow, **over):
+def make_router(tmp_path, shadow, runner=lambda job: job(), **over):
     c = settings._merge(settings.DEFAULTS, {"graft": {"enabled": False}, **over})
     return Router(judge_factory=lambda _c: Fixed(Verdict(0.9, {}, 0.3, 1.0)), ledger=Ledger(tmp_path / "l.db"),
-                  config_loader=lambda: c, conversation_root=lambda s: s, shadow_factory=lambda _c: Fixed(shadow))
+                  config_loader=lambda: c, conversation_root=lambda s: s, shadow_factory=lambda _c: Fixed(shadow),
+                  shadow_runner=runner)
 
 
 def routed(router):
@@ -186,7 +188,40 @@ def test_the_shadow_verdict_is_recorded_beside_the_judge(tmp_path):
     assert out["rung"] == "coder" and "shadow" not in out          # decided by the judge alone
     shadow = json.loads(row["shadow"])
     assert shadow["backend"] == "julia" and shadow["verdict"]["p_local"] == 0.1 and "ms" in shadow
-    assert json.loads(row["verdict"])["p_local"] == 0.9
+    assert json.loads(row["verdict"])["p_local"] == 0.9 and row["judge_backend"] == "semif"
+
+
+def test_the_shadow_runs_after_route_has_answered(tmp_path):
+    """A slow shadow (SemIf on the CPU takes seconds) must not hold up route()."""
+    release, jobs = threading.Event(), []
+
+    class Slow(Fixed):
+        def judge(self, brief):
+            release.wait(5)
+            return super().judge(brief)
+
+    def runner(job):
+        thread = threading.Thread(target=job)
+        jobs.append(thread)
+        thread.start()
+
+    router = make_router(tmp_path, None, runner=runner)
+    router._shadow_factory = lambda _c: Slow(Verdict(0.2, {}, 2.0, 1.0))
+    out, row = routed(router)
+    assert out["rung"] == "coder" and row["shadow"] is None          # answered; shadow still thinking
+    release.set()
+    jobs[0].join(5)
+    assert json.loads(router.ledger.decision(out["decision_id"])["shadow"])["verdict"]["p_local"] == 0.2
+
+
+def test_the_default_runner_is_a_daemon_thread(tmp_path):
+    started = []
+    router = make_router(tmp_path, Verdict(0.4, {}, 1.0, 1.0),
+                         runner=lambda job: started.append(tools._in_background(job)))
+    out, _ = routed(router)
+    started[0].join(5)
+    assert started[0].daemon     # never keeps Hermes from exiting
+    assert json.loads(router.ledger.decision(out["decision_id"])["shadow"])["verdict"]["p_local"] == 0.4
 
 
 @pytest.mark.parametrize("failure", [JudgeError("julia request failed: refused"), RuntimeError("anything at all")])
@@ -197,18 +232,40 @@ def test_a_failing_shadow_is_recorded_and_routing_goes_on(tmp_path, failure):
     assert "verdict" not in shadow and type(failure).__name__ in shadow["error"]
 
 
-def test_a_disabled_shadow_is_not_asked(tmp_path):
-    router = make_router(tmp_path, RuntimeError("must not be called"), shadow_judge={"enabled": False})
+def test_a_runner_that_cannot_start_does_not_fail_route(tmp_path):
+    def broken(job):
+        raise RuntimeError("can't start new thread")
+
+    out, row = routed(make_router(tmp_path, Verdict(0.4, {}, 1.0, 1.0), runner=broken))
+    assert out["rung"] == "coder" and row["shadow"] is None
+
+
+@pytest.mark.parametrize("shadow", ["none", "semif"])                 # semif: the same as the backend
+def test_no_shadow_or_the_routing_judge_itself_is_not_asked(tmp_path, shadow):
+    router = make_router(tmp_path, RuntimeError("must not be called"), judge={"backend": "semif", "shadow": shadow})
     _, row = routed(router)
     assert row["shadow"] is None
 
 
-def test_an_unknown_shadow_backend_is_an_error_not_a_guess():
-    with pytest.raises(JudgeError, match="unknown shadow_judge.backend"):
-        shadow_judge(settings._merge(settings.DEFAULTS, {"shadow_judge": {"backend": "jev"}}))
+def test_the_switch_picks_which_judge_routes(tmp_path):
+    c = settings._merge(settings.DEFAULTS, {"judge": {"backend": "julia", "shadow": "semif"}})
+    assert isinstance(tools.make_judge(c, c["judge"]["backend"]).backend, JuliaBackend)
+    assert tools.make_judge(c, tools.shadow_name(c)).backend.model == c["llama"]["judge_model"]
+    with pytest.raises(JudgeError, match="unknown judge 'jev'"):
+        tools.make_judge(c, "jev")
 
 
-def test_older_ledgers_gain_the_shadow_column(tmp_path):
+def test_julia_routing_through_the_real_default_factories(tmp_path, julia):
+    c = settings._merge(settings.DEFAULTS, {"graft": {"enabled": False}, "judge": {"backend": "julia", "shadow": "none"},
+                                            "julia": {"base_url": julia["url"]}})
+    router = Router(ledger=Ledger(tmp_path / "l.db"), config_loader=lambda: c, conversation_root=lambda s: s)
+    out, row = routed(router)
+    assert "P(local finishes)=0.75" in out["reason"] and row["judge_backend"] == "julia" and row["shadow"] is None
+    status = json.loads(router.status({}))
+    assert status["judge"] == {"backend": "julia", "shadow": None}
+
+
+def test_older_ledgers_gain_the_new_columns(tmp_path):
     import sqlite3
 
     path = tmp_path / "old.db"
@@ -219,8 +276,10 @@ def test_older_ledgers_gain_the_shadow_column(tmp_path):
     db.commit()
     db.close()
     led = Ledger(path)
-    assert led.decision("old")["shadow"] is None
-    assert led.decision(led.add_decision("b", None, "claude", "r", None, None, shadow={"error": "x"}))["shadow"]
+    assert led.decision("old")["shadow"] is None and led.decision("old")["judge_backend"] is None
+    new = led.add_decision("b", None, "claude", "r", None, None, judge_backend="julia")
+    led.set_shadow(new, {"backend": "semif", "error": "x"})
+    assert led.decision(new)["judge_backend"] == "julia" and json.loads(led.decision(new)["shadow"])["error"] == "x"
 
 
 # -- make report compares the two ---------------------------------------------------------
@@ -232,35 +291,62 @@ def test_judge_scores():
     assert s["picks"] == 1 and s["picks_passed"] == 1
 
 
-def test_report_scores_the_shadow_against_the_judge(tmp_path):
-    led = Ledger(tmp_path / "l.db")
-    db = led.db
+def report_cfg(**judge):
+    c = settings._merge(settings.DEFAULTS, {"judge": judge} if judge else {})
+    c["claude"]["week"] = {"reset_weekday": 0, "reset_hour": 9, "timezone": "Europe/Warsaw"}
+    return c
 
-    def task(id_, judge_p, shadow, verified):
-        db.execute("INSERT INTO decisions (id, ts, brief, rung, reason, verdict, shadow) VALUES (?,?,?,?,?,?,?)",
+
+def seeded(tmp_path):
+    db = Ledger(tmp_path / "l.db").db
+
+    def task(id_, judge_p, shadow, verified, backend=None):
+        db.execute("INSERT INTO decisions (id, ts, brief, rung, reason, verdict, shadow, judge_backend)"
+                   " VALUES (?,?,?,?,?,?,?,?)",
                    (id_, 0, "b", "coder", "r", json.dumps({"p_local": judge_p, "expected_difficulty": 0.2}),
-                    json.dumps(shadow)))
+                    json.dumps(shadow), backend))
         if verified is not None:
             db.execute("INSERT INTO attempts (decision_id, ts, rung, verified) VALUES (?,?,?,?)",
                        (id_, 1, "coder", verified))
 
-    ok = lambda p: {"backend": "julia", "verdict": {"p_local": p, "expected_difficulty": 0.2}, "ms": 40}  # noqa: E731
-    task("a", 0.9, ok(0.95), 1)
-    task("b", 0.9, ok(0.10), 0)    # the judge was sure and wrong; the shadow saw it
-    task("c", 0.9, ok(0.90), 1)
-    task("d", 0.9, {"backend": "julia", "error": "JudgeError: julia request failed", "ms": 1}, 1)
-    task("e", 0.9, ok(0.50), None)  # not labelled
+    ok = lambda p, b="julia": {"backend": b, "verdict": {"p_local": p, "expected_difficulty": 0.2}, "ms": 40}  # noqa: E731
+    task("a", 0.9, ok(0.95), 1)                  # judge_backend NULL: a row from before the switch, semif
+    task("b", 0.9, ok(0.10), 0, "semif")         # the judge was sure and wrong; the shadow saw it
+    task("c", 0.9, ok(0.90), 1, "semif")
+    task("d", 0.9, {"backend": "julia", "error": "JudgeError: julia request failed", "ms": 1}, 1, "semif")
+    task("e", 0.9, ok(0.50), None, "semif")      # not labelled
     db.commit()
-    c = settings._merge(settings.DEFAULTS, {})
-    c["claude"]["week"] = {"reset_weekday": 0, "reset_hour": 9, "timezone": "Europe/Warsaw"}
-    out = report.render(db, c, 10)
-    assert "shadow judge (julia): answered 4 of 5 decisions, median 40 ms; errors: JudgeError ×1" in out
-    assert "scored against 3 labelled coder attempts that both judges answered" in out
+    return db
+
+
+def test_report_scores_the_shadow_against_the_judge(tmp_path):
+    out = report.render(seeded(tmp_path), report_cfg(), 10)
+    assert "as shadow, julia answered 4 of 5 decisions, median 40 ms; errors: JudgeError ×1" in out
+    assert "scored against 3 labelled coder attempts that julia and semif both answered" in out
     lines = {line.split()[0]: line for line in out.splitlines() if "Brier" in line}
-    assert "near-certain picks   3, passed 67%" in lines["judge"]
+    assert "(routes)" in lines["semif"] and "(routes)" not in lines["julia"]
+    assert "near-certain picks   3, passed 67%" in lines["semif"]
     assert "near-certain picks   2, passed 100%" in lines["julia"]
     brier = {k: float(v.split("Brier ")[1].split()[0]) for k, v in lines.items()}
-    assert brier["julia"] < brier["judge"]
+    assert brier["julia"] < brier["semif"]
+    assert "judge calibration (semif) on 4 labelled coder attempts" in out
+
+
+def test_after_a_switch_both_roles_count_for_each_judge(tmp_path):
+    db = seeded(tmp_path)
+    # Switched: julia now routes and semif is the shadow.
+    db.execute("INSERT INTO decisions (id, ts, brief, rung, reason, verdict, shadow, judge_backend) VALUES (?,?,?,?,?,?,?,?)",
+               ("f", 0, "b", "coder", "r", json.dumps({"p_local": 0.2, "expected_difficulty": 2.0}),
+                json.dumps({"backend": "semif", "verdict": {"p_local": 0.8, "expected_difficulty": 0.2}, "ms": 900}),
+                "julia"))
+    db.execute("INSERT INTO attempts (decision_id, ts, rung, verified) VALUES ('f', 1, 'coder', 0)")
+    db.commit()
+    out = report.render(db, report_cfg(backend="julia", shadow="semif"), 10)
+    assert "scored against 4 labelled coder attempts" in out
+    assert "as shadow, semif answered 1 of 1 decisions, median 900 ms" in out
+    lines = {line.split()[0]: line for line in out.splitlines() if "Brier" in line}
+    assert "(routes)" in lines["julia"]
+    assert "judge calibration (julia) on 1 labelled coder attempts" in out   # its own verdicts only
 
 
 def test_self_test_drives_the_upstream_runtime_as_its_parity_tests_do(tmp_path):

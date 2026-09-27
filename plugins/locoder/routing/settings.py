@@ -43,11 +43,16 @@ DEFAULTS: Dict[str, Any] = {
         "limit_fallback_s": 3600,
         "result_chars": 8000,
     },
-    "shadow_judge": {
-        # A second judge asked on every route() and recorded beside the real one, never acted on:
-        # `make report` compares the two against what actually passed. Julia-1 (julia/server.py).
-        "enabled": True,
-        "backend": "julia",
+    "judge": {
+        # Which judge route() acts on: "semif" (llama.judge_model, a small chat model read through
+        # its logprobs) or "julia" (Julia-1, julia/server.py).
+        "backend": "semif",
+        # Which is also asked, after the decision, and only recorded: the other one, or "none".
+        # `make report` scores both against what actually passed.
+        "shadow": "julia",
+    },
+    "julia": {
+        # The locoder-julia service (JULIA_PORT in the Makefile).
         "base_url": "http://127.0.0.1:8089",
         "timeout_s": 5,
     },

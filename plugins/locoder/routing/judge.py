@@ -14,7 +14,8 @@ token, requested with ``max_tokens=1`` and ``top_logprobs``, and the probability
 allowed token is read off. It runs on the ``judge`` preset of the llama.cpp router, CPU-only,
 so asking never evicts the orchestrator's single KV slot. ``JuliaBackend`` asks Supersonic
 Labs' Julia-1, a 144M-parameter decision model built for exactly this interface, served on the
-CPU by ``julia/server.py``; route() runs it as a shadow, recorded but never acted on.
+CPU by ``julia/server.py``. routing.yaml's ``judge`` block picks which of the two routes and
+which runs as a shadow, recorded but never acted on.
 
 Every answer carries *coverage*: the share of the model's probability mass that landed on an
 allowed answer. The distribution is renormalised over the allowed answers, so coverage is the

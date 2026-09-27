@@ -84,11 +84,11 @@ def check_profile() -> None:
     from hermes_yaml import safe_load
 
     cfg = safe_load((home / "config.yaml").read_text())
-    routing = safe_load((home / "routing.yaml").read_text()) if (home / "routing.yaml").is_file() else {}
     sys.path.insert(0, str(home / "plugins" / "locoder"))
+    from routing import settings
     from routing.judge import WORKER
 
-    found = stack.problems(_presets(), cfg, routing or {}, WORKER)
+    found = stack.problems(_presets(), cfg, settings.load(), WORKER)
     for msg in found:
         fail(msg)
     if not found:
@@ -193,6 +193,9 @@ def check_llama() -> None:
                                                     if ignored else "every preset key was accepted"))
     _check_context(base)
     _check_vram()
+    if "semif" not in (cfg["judge"]["backend"], cfg["judge"]["shadow"]):
+        ok("the SemIf judge is not asked (judge.backend and judge.shadow)")
+        return
     if cfg["llama"]["judge_model"] in missing:
         return
     try:
@@ -246,37 +249,38 @@ def _check_vram() -> None:
                                           else ""))
 
 
-def check_shadow() -> None:
-    """The shadow judge only ever records, so route() survives it being down, but the data it is
-    there to collect does not: a stopped container is a gap in the comparison, found here."""
-    print("shadow judge")
+def check_julia() -> None:
+    """Julia-1's service. Routing on it, a stopped container means every task starts on Claude
+    Code; as the shadow, route() survives it but the comparison it is there for gets a gap."""
+    print("julia-1")
     sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "locoder"))
     from routing import settings
     from routing.judge import JudgeError
-    from routing.tools import shadow_judge
+    from routing.tools import make_judge
 
     cfg = settings.load()
-    sc = cfg["shadow_judge"]
-    if not sc.get("enabled"):
-        ok("off (shadow_judge.enabled: false)")
+    role = ("routes" if cfg["judge"]["backend"] == "julia"
+            else "shadow" if cfg["judge"]["shadow"] == "julia" else None)
+    if role is None:
+        ok("not asked (judge.backend and judge.shadow)")
         return
-    base = sc["base_url"].rstrip("/")
+    base = cfg["julia"]["base_url"].rstrip("/")
     try:
         with urllib.request.urlopen(base + "/health", timeout=10) as resp:
             info = json.loads(resp.read())
     except OSError as exc:
         fail(f"{base}/health unreachable ({exc}): make julia && systemctl --user start locoder-julia, "
-             "or set shadow_judge.enabled: false")
+             "or stop asking it (judge.backend / judge.shadow)")
         return
     ok(f"{info.get('repo')}@{str(info.get('commit'))[:12]}, weights {str(info.get('weights_sha256'))[:12]}…, "
        f"max_length {info.get('max_length')}, {info.get('threads')} threads")
     try:
-        v = shadow_judge(cfg).judge("Goal: fix the typo 'recieve' in README.md.\nAcceptance: grep -q receive README.md\n"
+        v = make_judge(cfg, "julia").judge("Goal: fix the typo 'recieve' in README.md.\nAcceptance: grep -q receive README.md\n"
                                     "Constraints: touch nothing else.")
     except JudgeError as exc:
-        fail(f"shadow judge: {exc}")
+        fail(f"julia-1 ({role}): {exc}")
         return
-    ok(f"shadow judge: P(local)={v.p_local:.2f}, difficulty≈{v.expected_difficulty:.2f} on a one-word typo fix")
+    ok(f"julia-1 ({role}): P(local)={v.p_local:.2f}, difficulty≈{v.expected_difficulty:.2f} on a one-word typo fix")
 
 
 def main() -> int:
@@ -288,7 +292,7 @@ def main() -> int:
     check_tools()
     if not args.offline:
         check_llama()
-        check_shadow()
+        check_julia()
     if failures:
         print(f"\n{len(failures)} check(s) failed")
         return 1
