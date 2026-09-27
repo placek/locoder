@@ -12,12 +12,14 @@ A backend implements ``system_one(state, questions)``. The one here, ``SemIfBack
 SemIf trick on a small local model: each question becomes a prompt whose answer is a single
 token, requested with ``max_tokens=1`` and ``top_logprobs``, and the probability of each
 allowed token is read off. It runs on the ``judge`` preset of the llama.cpp router, CPU-only,
-so asking never evicts the orchestrator's single KV slot. A Jev or CLM backend
-would be another class with the same method.
+so asking never evicts the orchestrator's single KV slot. ``JuliaBackend`` asks Supersonic
+Labs' Julia-1, a 144M-parameter decision model built for exactly this interface, served on the
+CPU by ``julia/server.py``; route() runs it as a shadow, recorded but never acted on.
 
 Every answer carries *coverage*: the share of the model's probability mass that landed on an
 allowed answer. The distribution is renormalised over the allowed answers, so coverage is the
-only sign that the model mostly wanted to say something else.
+only sign that the model mostly wanted to say something else. A decision model like Julia-1
+scores only the options it is given, so its coverage is 1 by construction.
 """
 from __future__ import annotations
 
@@ -39,6 +41,9 @@ class JudgeError(RuntimeError):
 @dataclass(frozen=True)
 class Noul:
     instructions: str
+    # What "yes" and "no" mean here. SemIf asks for Y/N and ignores it; Julia-1 scores the two
+    # descriptions, which it does markedly better than the bare words.
+    criteria: Optional[Mapping[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,80 @@ class SemIfBackend:
         return Answer(probs={tokens[t]: p for t, p in folded.probs.items()}, coverage=folded.coverage)
 
 
+# -- Julia-1: a decision model that scores the options it is given --------------------
+
+class JuliaBackend:
+    """Julia-1's typed API over HTTP (``julia/server.py``): Noul -> noul, Score -> score, Choice ->
+    choice, each answered with a probability per option. Julia-1 takes 2..20 options per question,
+    a Score's levels are its rubric's positions (0..n-1), and its evaluated input is 1,024 tokens:
+    the server refuses a longer brief instead of truncating it, and that is a JudgeError here."""
+
+    def __init__(self, base_url: str, timeout_s: float = 5, opener=None):
+        self.url = base_url.rstrip("/") + "/predict"
+        self.timeout_s = timeout_s
+        self._open = opener or urllib.request.urlopen
+
+    def system_one(self, state: str, questions: Mapping[str, Question]) -> Dict[str, Answer]:
+        wire, readers = {}, {}
+        for name, question in questions.items():
+            wire[name], readers[name] = julia_question(question)
+        body = json.dumps({"state": state.strip(), "questions": wire}).encode()
+        req = urllib.request.Request(self.url, data=body, headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with self._open(req, timeout=self.timeout_s) as resp:
+                payload = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            try:
+                reason = json.loads(exc.read().decode()).get("error", "")
+            except (ValueError, AttributeError, OSError):
+                reason = ""
+            raise JudgeError(f"julia refused the request ({exc.code}): {reason or exc.reason}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            raise JudgeError(f"julia request failed: {exc}") from exc
+        answers = payload.get("answers") if isinstance(payload, dict) else None
+        if not isinstance(answers, dict):
+            raise JudgeError("julia response carried no answers")
+        return {name: readers[name](answers.get(name)) for name in questions}
+
+
+def julia_question(question: Question):
+    """The typed question Julia-1 expects, and how to read its answer back into ours."""
+    if isinstance(question, Noul):
+        wire = {"type": "noul", "instructions": question.instructions}
+        if question.criteria:
+            wire["criteria"] = {"false": question.criteria["no"], "true": question.criteria["yes"]}
+        return wire, lambda a: _julia_answer(a, {"false": "no", "true": "yes"})
+    if isinstance(question, Score):
+        levels = sorted(question.scale)
+        if not 2 <= len(levels) <= 20:
+            raise ValueError("Julia-1 scores 2..20 levels")
+        wire = {"type": "score", "instructions": question.instructions,
+                "criteria": [question.scale[k] for k in levels]}
+        return wire, lambda a: _julia_answer(a, {str(i): str(k) for i, k in enumerate(levels)})
+    if isinstance(question, Choice):
+        if not 2 <= len(question.criteria) <= 20:
+            raise ValueError("Julia-1 chooses among 2..20 options")
+        wire = {"type": "choice", "instructions": question.instructions, "criteria": dict(question.criteria)}
+        return wire, lambda a: _julia_answer(a, {name: name for name in question.criteria})
+    raise TypeError(f"not a question: {question!r}")
+
+
+def _julia_answer(answer, names: Mapping[str, str]) -> Answer:
+    """Julia's per-option probabilities, renamed to ours. Coverage is 1: it scores only these."""
+    probs = answer.get("probabilities") if isinstance(answer, dict) else None
+    if not isinstance(probs, dict) or set(probs) != set(names):
+        raise JudgeError(f"julia answer lacks probabilities for {sorted(names)}: {answer!r}"[:300])
+    try:
+        values = {names[k]: float(v) for k, v in probs.items()}
+    except (TypeError, ValueError) as exc:
+        raise JudgeError(f"julia answer has non-numeric probabilities: {probs!r}"[:300]) from exc
+    total = sum(values.values())
+    if not all(math.isfinite(v) and v >= 0 for v in values.values()) or not 0.99 <= total <= 1.01:
+        raise JudgeError(f"julia probabilities do not form a distribution: {probs!r}"[:300])
+    return Answer(probs=values, coverage=1.0)
+
+
 # -- the routing judge ----------------------------------------------------------------
 
 # Who the questions are about: the model delegation.model names in profile/config.yaml, with
@@ -183,7 +262,9 @@ QUESTIONS: Dict[str, Question] = {
          3: "heavy: a large feature, a wide refactor, or a deep debugging trace"}),
     "local": Noul(
         f"The task below would be done by {WORKER}.\n"
-        "Will that model finish it correctly, with its acceptance check passing?"),
+        "Will that model finish it correctly, with its acceptance check passing?",
+        {"yes": "it finishes the task and the acceptance check passes",
+         "no": "it fails, gives up or runs out of steps, and the acceptance check does not pass"}),
 }
 
 
@@ -223,5 +304,6 @@ def verdict_dict(v: Optional[Verdict]) -> Optional[dict]:
     }
 
 
-__all__: List[str] = ["Answer", "Backend", "Choice", "Judge", "JudgeError", "Noul", "QUESTIONS",
-                      "Score", "SemIfBackend", "Verdict", "distribution", "render", "verdict_dict"]
+__all__: List[str] = ["Answer", "Backend", "Choice", "Judge", "JudgeError", "JuliaBackend", "Noul", "QUESTIONS",
+                      "Score", "SemIfBackend", "Verdict", "distribution", "julia_question", "render",
+                      "verdict_dict"]

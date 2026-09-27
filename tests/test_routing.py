@@ -408,10 +408,11 @@ def router(tmp_path, monkeypatch):
     (tmp_path / "proj").mkdir()
     c = cfg(claude={"bin": str(claude), "workdir_roots": [str(tmp_path)]},
             openrouter={"hermes_bin": str(hermes)}, graft={"enabled": False})
-    state = {"verdict": verdict(0.9, 0.5), "now": at(2026, 9, 24), "roots": {}}
+    state = {"verdict": verdict(0.9, 0.5), "shadow": verdict(0.3, 1.5), "now": at(2026, 9, 24), "roots": {}}
     r = Router(clock=lambda: state["now"], judge_factory=lambda _c: FakeJudge(state["verdict"]),
                ledger=Ledger(tmp_path / "ledger.db"), config_loader=lambda: c,
-               conversation_root=lambda sid: state["roots"].get(sid, sid))
+               conversation_root=lambda sid: state["roots"].get(sid, sid),
+               shadow_factory=lambda _c: FakeJudge(state["shadow"]))
     r.test = {"mode": mode, "hermes_mode": hermes_mode, "argv": tmp_path / "hermes-argv",
               "proj": str(tmp_path / "proj"), "state": state}
     return r

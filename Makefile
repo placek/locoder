@@ -6,12 +6,13 @@
 # provides the Nvidia driver, Docker and nvidia-container-toolkit.
 #
 #   make install        build/link everything (idempotent)
-#   make enable         start llama.cpp now and at login
+#   make enable         start the llama.cpp router and the Julia-1 judge, now and at login
 #   make check          prove the installed stack is wired (plugins, tools, router, judge)
 #   make tui            open the agent
 #   make bump [REV=…]   move Hermes to a new revision, keep it only if `check` passes
 #   make report         what the ledger says about the routing goals, the rungs and the judge
 #   make bakeoff MODELS=a,b [TASKS=10]   replay recent tasks on candidate OpenRouter models
+#   make julia          build the Julia-1 shadow judge image (part of install)
 #   make test           unit tests and the presets/config consistency rules (no Hermes needed)
 
 SHELL := bash
@@ -33,6 +34,14 @@ GPU_ARGS    ?= --device=nvidia.com/gpu=all
 DOCKER      ?= $(shell command -v docker)
 LLAMA_TAG   ?= ghcr.io/ggml-org/llama.cpp:server-cuda
 SANDBOX_IMAGE := locoder-sandbox:local
+# The shadow judge (routing.yaml: shadow_judge). The weights hash is SupersonicLabs/Julia-1's
+# model.safetensors: the build fails if upstream changes it. Pin JULIA_REVISION to the commit
+# `make status` reports once you trust it.
+JULIA_IMAGE          := locoder-julia:local
+JULIA_PORT           ?= 8089
+JULIA_REPO           ?= SupersonicLabs/Julia-1
+JULIA_REVISION       ?= main
+JULIA_WEIGHTS_SHA256 ?= df853bf7fe424420011f3d0c47a05d7341aa9eefa7fb9f203ea4aada4ad95b72
 
 # ddgs: keyless search backend (web/ddgs in config.yaml).
 HERMES_EXTRAS    ?= ddgs
@@ -53,19 +62,21 @@ PROFILE_FILES := config.yaml SOUL.md routing.yaml
 PROFILE_LINKS := $(addprefix $(HERMES_HOME)/,$(PROFILE_FILES))
 DIR_LINKS     := $(HERMES_HOME)/skills $(HERMES_HOME)/plugins
 LLAMA_UNIT    := $(UNIT_DIR)/locoder-llama.service
+JULIA_UNIT    := $(UNIT_DIR)/locoder-julia.service
+UNITS         := locoder-llama.service locoder-julia.service
 WRAPPER       := $(BIN_DIR)/locoder
 
 CHECK_ENV = HERMES_HOME=$(HERMES_HOME) HERMES_DEFUDDLE_BIN=$(DEFUDDLE_BIN) \
             LOCODER_PRESETS=$(REPO)/llama/presets.ini LOCODER_SANDBOX_IMAGE=$(SANDBOX_IMAGE) \
             LOCODER_GRAFT_VERSION=$(GRAFT_VERSION) PATH=$(GRAFT_DIR)/node_modules/.bin:$$PATH
 
-.PHONY: help install hermes profile llama sandbox defuddle graft wrapper enable disable restart \
+.PHONY: help install hermes profile llama julia sandbox defuddle graft wrapper enable disable restart \
         status logs check check-offline test bump tui report bakeoff pin-llama uninstall
 
 help:
 	@sed -n 's/^#   make /  make /p' Makefile
 
-install: hermes profile defuddle graft sandbox llama wrapper
+install: hermes profile defuddle graft sandbox llama julia wrapper
 	@echo "installed. next: make enable && make check"
 
 # -- Hermes: pinned checkout + uv venv ------------------------------------------
@@ -121,6 +132,22 @@ $(STATE)/sandbox-$(GRAFT_VERSION).stamp: sandbox/Dockerfile
 	$(DOCKER) build --quiet --build-arg GRAFT_VERSION=$(GRAFT_VERSION) --tag $(SANDBOX_IMAGE) sandbox
 	@mkdir -p $(STATE) && rm -f $(STATE)/sandbox*.stamp && touch $@
 
+# -- Julia-1 shadow judge (CPU) ------------------------------------------------------------
+julia: $(JULIA_UNIT) $(STATE)/julia.stamp
+
+# The build downloads the model, verifies the weights and answers a self-test.
+$(STATE)/julia.stamp: julia/Dockerfile julia/fetch.py julia/server.py Makefile
+	$(DOCKER) build --quiet --build-arg JULIA_REPO=$(JULIA_REPO) --build-arg JULIA_REVISION=$(JULIA_REVISION) \
+	    --build-arg JULIA_WEIGHTS_SHA256=$(JULIA_WEIGHTS_SHA256) --tag $(JULIA_IMAGE) julia
+	@if systemctl --user is-active --quiet locoder-julia; then \
+	    echo "julia image rebuilt: restarting locoder-julia"; systemctl --user restart locoder-julia; fi
+	@mkdir -p $(STATE) && touch $@
+
+$(JULIA_UNIT): systemd/locoder-julia.service.in Makefile | $(UNIT_DIR)
+	sed -e 's|@REPO@|$(REPO)|g' -e 's|@DOCKER@|$(DOCKER)|g' -e 's|@JULIA_PORT@|$(JULIA_PORT)|g' \
+	    -e 's|@IMAGE@|$(JULIA_IMAGE)|g' $< > $@
+	systemctl --user daemon-reload
+
 # -- llama.cpp router ---------------------------------------------------------------
 llama: $(LLAMA_UNIT) $(STATE)/presets.stamp | $(STATE)/llama-cache
 
@@ -155,21 +182,23 @@ $(WRAPPER): bin/locoder.in Makefile | $(BIN_DIR)
 
 # -- Operating it ---------------------------------------------------------------------
 enable:
-	systemctl --user enable --now locoder-llama.service
+	systemctl --user enable --now $(UNITS)
 
 disable:
-	systemctl --user disable --now locoder-llama.service
+	systemctl --user disable --now $(UNITS)
 
 restart:
-	systemctl --user restart locoder-llama.service
+	systemctl --user restart $(UNITS)
 
 status:
-	@systemctl --user --no-pager status locoder-llama.service | head -5 || true
+	@for u in $(UNITS); do systemctl --user --no-pager status $$u | head -3 || true; done
 	@curl -fsS http://127.0.0.1:$(PORT)/v1/models | python3 -c \
 	    'import json,sys; print("presets:", [m["id"] for m in json.load(sys.stdin)["data"]])' || true
+	@curl -fsS http://127.0.0.1:$(JULIA_PORT)/health | python3 -c \
+	    'import json,sys; h=json.load(sys.stdin); print("julia:", h.get("repo"), h.get("commit"))' || true
 
 logs:
-	journalctl --user -u locoder-llama.service -f
+	journalctl --user -u locoder-llama.service -u locoder-julia.service -f
 
 tui:
 	@exec $(WRAPPER)
@@ -202,8 +231,8 @@ bakeoff:
 # Removes what `install` placed outside the repo. State (the Hermes home with
 # sessions, memories and the routing ledger) survives unless PURGE=1.
 uninstall:
-	-systemctl --user disable --now locoder-llama.service
-	rm -f $(LLAMA_UNIT) $(WRAPPER) $(PROFILE_LINKS) $(DIR_LINKS)
+	-systemctl --user disable --now $(UNITS)
+	rm -f $(LLAMA_UNIT) $(JULIA_UNIT) $(WRAPPER) $(PROFILE_LINKS) $(DIR_LINKS)
 	systemctl --user daemon-reload
 	rm -rf $(PREFIX)
 	$(if $(PURGE),rm -rf $(STATE))

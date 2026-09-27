@@ -4,11 +4,13 @@
 Claude Code should last until its weekly reset (days without it is the signal that too little
 is offloaded) without the verified pass rate dropping. Below that: how the coder does when it
 is chosen as a sure thing versus as a fallback, what OpenRouter cost, and whether the judge's
-P(local) separates tasks the coder finishes from ones it does not.
+P(local) separates tasks the coder finishes from ones it does not, and whether the shadow
+judge would have separated them better.
 """
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import sys
 import time
@@ -59,6 +61,58 @@ def _rate(passed: int, failed: int) -> str:
 
 def _day(ts: float, cfg: dict) -> str:
     return policy.when(ts, cfg)
+
+
+def judge_scores(pairs: List[Tuple[dict, bool]], near: float, max_difficulty: float) -> dict:
+    """How well verdicts predicted the labels: Brier score and log loss on P(local) (lower is
+    better), and the tasks the verdicts would have sent to the coder as near-certain."""
+    n = len(pairs)
+    clip = lambda p: min(max(p, 0.01), 0.99)  # noqa: E731 - one wrong certainty must not dominate
+    brier = sum((v["p_local"] - y) ** 2 for v, y in pairs) / n
+    loss = -sum(math.log(clip(v["p_local"])) if y else math.log(1 - clip(v["p_local"])) for v, y in pairs) / n
+    picks = [y for v, y in pairs
+             if v["p_local"] >= near and v.get("expected_difficulty", math.inf) <= max_difficulty]
+    return {"n": n, "brier": brier, "log_loss": loss, "picks": len(picks), "picks_passed": sum(picks)}
+
+
+def _shadow_section(db: sqlite3.Connection, pol: dict, say) -> None:
+    rows = db.execute("SELECT id, verdict, shadow FROM decisions WHERE shadow IS NOT NULL").fetchall()
+    if not rows:
+        return
+    shadows = {r["id"]: json.loads(r["shadow"]) for r in rows}
+    backend = next(iter(shadows.values())).get("backend") or "shadow"
+    answered = [s for s in shadows.values() if s.get("verdict")]
+    errors: dict = {}
+    for s in shadows.values():
+        if s.get("error"):
+            errors[s["error"].split(":")[0]] = errors.get(s["error"].split(":")[0], 0) + 1
+    ms = sorted(s["ms"] for s in answered if "ms" in s)
+    say(f"\nshadow judge ({backend}): answered {len(answered)} of {len(shadows)} decisions"
+        + (f", median {ms[len(ms) // 2]} ms" if ms else "")
+        + (f"; errors: {', '.join(f'{k} ×{v}' for k, v in sorted(errors.items(), key=lambda kv: -kv[1]))}"
+           if errors else ""))
+
+    labelled = db.execute("""
+        SELECT d.id, d.verdict, a.verified FROM decisions d
+        JOIN attempts a ON a.decision_id = d.id AND a.rung = 'coder'
+        WHERE d.shadow IS NOT NULL AND a.verified IS NOT NULL""").fetchall()
+    both = [(json.loads(r["verdict"]), shadows[r["id"]]["verdict"], bool(r["verified"])) for r in labelled
+            if r["verdict"] and shadows[r["id"]].get("verdict")]
+    say(f"  scored against {len(both)} labelled coder attempts that both judges answered")
+    if not both:
+        return
+    near, most = float(pol["local_threshold"]), float(pol["local_max_difficulty"])
+    rate = sum(y for _, _, y in both) / len(both)
+    base = {"p_local": rate, "expected_difficulty": 0.0}
+    for name, pairs in (("judge", [(j, y) for j, _, y in both]), (backend, [(s, y) for _, s, y in both]),
+                        ("base rate", [(base, y) for _, _, y in both])):
+        s = judge_scores(pairs, near, most)
+        picks = (f"near-certain picks {s['picks']:>3}, passed {_rate(s['picks_passed'], s['picks'] - s['picks_passed'])}"
+                 if name != "base rate" else f"(always P(local)={rate:.2f})")
+        say(f"  {name:<10} Brier {s['brier']:.3f}   log loss {s['log_loss']:.3f}   {picks}")
+    say("  Lower is better, and a judge must beat the base rate to be worth asking. Labels come only from"
+        " tasks the judge sent to the coder, so both are scored on its picks; switch backends only on a"
+        " clear margin over a few dozen labels.")
 
 
 def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
@@ -135,6 +189,7 @@ def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
         say(f"  P(local) {lo:.2f}-{min(hi, 1.0):.2f}: {v:>3}/{v + f:<3} passed ({_rate(v, f)})")
     say(f"  local_threshold ({near}) belongs where the pass rate is near-certain;"
         f" fallback_threshold ({fallback}) where a try still beats paying OpenRouter.")
+    _shadow_section(db, pol, say)
 
     hits = db.execute("SELECT ts, until, reset_source FROM limit_hits ORDER BY ts DESC LIMIT 5").fetchall()
     if hits:
