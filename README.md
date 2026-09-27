@@ -58,6 +58,12 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   128k-token conversation. A Jev or CLM backend would be another
   class with the same `system_one(state, questions)` method
   (`plugins/locoder/routing/judge.py`).
+- **A second judge is watched, not obeyed.** Every `route()` also asks
+  Supersonic Labs' Julia-1 the same questions. Julia-1 is a 144M-parameter
+  decision model built for this interface, served on the CPU by the
+  `locoder-julia` container. Its verdict goes into the ledger beside the real
+  one and never changes a decision. `make report` scores both against the
+  tasks that passed or failed; see [compare the shadow judge](#compare-the-shadow-judge).
 - **A guessing judge is ignored.** Each answer carries *coverage*, the share of
   the judge's probability mass that landed on an allowed answer. Below
   `policy.min_coverage` (0.5) the verdict is recorded but routing treats it as
@@ -106,9 +112,11 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
 | `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
 | `plugins/web/defuddle/` | clean page extraction + `web_research` | symlinked plugins dir |
 | `sandbox/Dockerfile` | the container every agent `terminal()` call runs in, with the pinned graft | image `locoder-sandbox:local` |
+| `julia/` | the Julia-1 shadow judge: `Dockerfile`, `fetch.py` (download, hash check), `server.py` (HTTP) | image `locoder-julia:local` |
+| `systemd/locoder-julia.service.in` | the shadow judge as a user service, on `127.0.0.1:8089` | `~/.config/systemd/user/` |
 | `bin/locoder.in` | the `locoder` wrapper: pinned Hermes + this home + its `.env` | `~/.local/bin/locoder` |
 | `scripts/` | install, bump, check, report, bakeoff | — |
-| `tests/` | routing plugin, report and bake-off tests (no Hermes needed) | — |
+| `tests/` | routing plugin, report, bake-off, shadow-judge and stack tests (no Hermes needed) | — |
 | `.todo/` | specs and tickets, committed with the code | — |
 
 State lives outside the repo: the Hermes home (sessions, memories, the routing
@@ -141,6 +149,10 @@ named in `presets.ini` (all three shards), plus the judge at `judge.gguf` — an
 (3–4B, Q4) will do; a symlink within the directory is fine. `make check` asks
 it a sanity question and warns if its answers are unusable.
 
+The shadow judge needs no model file: `make julia` downloads Julia-1 (about
+550 MB) from Hugging Face and a CPU-only PyTorch from download.pytorch.org
+into its image, so the build needs to reach both.
+
 ## Install
 
 ```sh
@@ -148,7 +160,7 @@ git clone git@github.com:placek/locoder.git && cd locoder
 make install        # Hermes venv, profile links, defuddle, sandbox image, router unit, `locoder` on PATH
 $EDITOR ~/.local/state/locoder/home/.env     # OPENROUTER_API_KEY
 make enable         # start the router now and at login (loginctl enable-linger for boot)
-make check          # plugins loaded, tools visible, presets served, judge answering
+make check          # plugins loaded, tools visible, presets served, both judges answering
 make tui            # or just: locoder
 ```
 
@@ -295,6 +307,44 @@ make report
 - **judge calibration** — pass rate per P(local) band, split at the two
   thresholds. The bands should rise from left to right.
 - **openrouter** — spend per week and per month.
+- **shadow judge** — how often Julia-1 answered, and both judges scored on
+  the same labelled tasks; see below.
+
+### Compare the shadow judge
+
+`route()` asks the judge and then Julia-1, and records both verdicts. Only the
+judge's verdict routes. `make report` ends with:
+
+```
+shadow judge (julia): answered 212 of 215 decisions, median 41 ms; errors: JudgeError ×3
+  scored against 38 labelled coder attempts that both judges answered
+  judge      Brier 0.214   log loss 0.622   near-certain picks  21, passed 86%
+  julia      Brier 0.178   log loss 0.541   near-certain picks  17, passed 94%
+  base rate  Brier 0.231   log loss 0.653   (always P(local)=0.63)
+```
+
+- **Brier and log loss** measure how far each judge's P(local) was from what
+  happened; lower is better. A judge that can't beat the *base rate*
+  (always guessing the average pass rate) adds nothing.
+- **near-certain picks** are the tasks each judge would have sent to the coder
+  first under the current thresholds, with their pass rate.
+- **Labels exist only for tasks that went to the coder**, and the real judge
+  chose those tasks. So both judges are scored on its picks; the shadow is
+  never tested on tasks the judge kept away from the coder.
+
+To switch, once the shadow wins by a clear margin over a few dozen labels:
+make `JuliaBackend` the judge in `Router.__init__` (`plugins/locoder/routing/tools.py`)
+and retune `policy.local_threshold`, because a new judge has a new scale.
+`policy.min_coverage` does nothing for Julia-1: it scores only the options it
+is given, so its coverage is always 1.
+
+Julia-1's evaluated input is 1,024 tokens. The service refuses a longer brief
+rather than truncate it, and the ledger records that as the shadow's error.
+Its image pins the weights by hash (`JULIA_WEIGHTS_SHA256` in the `Makefile`).
+The build downloads the model, checks the hash and answers a self-test, so an
+image that builds also answers. `make status` shows the commit it was built
+from; set `JULIA_REVISION` to that commit to pin it. To stop asking it, set
+`shadow_judge.enabled: false`.
 
 ### Tune the routing
 
@@ -438,12 +488,13 @@ smoke test above.
 ```
 make install        build/link everything (idempotent); after editing presets.ini it restarts the router
 make graft          install the pinned graft on the host (part of install)
-make enable|disable start/stop the router now and at login
-make restart        after `make install` regenerated the unit (new GPU_ARGS, MODELS, image)
-make status         router state and served presets
-make logs           follow the router
-make check          the installed stack is wired: profile, plugins, host tools, router, judge
-make check-offline  the same without the router and judge
+make julia          build the Julia-1 shadow judge image and its unit (part of install)
+make enable|disable start/stop the router and the shadow judge now and at login
+make restart        after `make install` regenerated a unit (new GPU_ARGS, MODELS, image)
+make status         both services, served presets, the shadow judge's model commit
+make logs           follow the router and the shadow judge
+make check          the installed stack is wired: profile, plugins, host tools, router, judge, shadow judge
+make check-offline  the same without the router and the judges
 make tui            open the agent (same as `locoder`)
 make test           unit tests, no Hermes needed
 make report         the ledger against the routing goals
@@ -497,6 +548,10 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | `openrouter.model` | `deepseek/deepseek-v4.1-flash` | placeholder until a bake-off picks one |
 | `openrouter.toolsets` | `file,terminal,web,todo` | `-t` for the one-shot run: no `delegate_task`, `clarify` or routing tools |
 | `openrouter.timeout_s` | 1800 | per run |
+| `shadow_judge.enabled` | true | ask the shadow judge on every `route()` and record its verdict |
+| `shadow_judge.backend` | `julia` | the only one built in: Julia-1 via `julia/server.py` |
+| `shadow_judge.base_url` | `http://127.0.0.1:8089` | the `locoder-julia` service (`JULIA_PORT` in the `Makefile`) |
+| `shadow_judge.timeout_s` | 5 | per request; both questions go in one |
 
 ### The ledger
 
@@ -505,7 +560,8 @@ in place when the plugin opens them.
 
 - `decisions` — one row per `route()`: the brief, workdir, starting rung and
   reason, the judge's verdict (JSON), Claude Code's availability (JSON), the
-  workdir's `commit_sha` and `dirty` flag, and the session `mode`.
+  workdir's `commit_sha` and `dirty` flag, the session `mode`, and `shadow`
+  (JSON: the shadow judge's backend and verdict or error, and how long it took).
 - `attempts` — one row per run: rung, whether the backend reported success
   (`ok`), whether the acceptance check passed (`verified`, the label that
   matters), `limit_hit`, `cost`, turns, duration, session id, notes.
@@ -555,6 +611,9 @@ Invoke any of them as `/<name>`.
 | `make check` says the router ignored a preset key | a typo, an option this llama.cpp image lacks, or an alias of the option's long name; the router only logs a warning and runs without it |
 | `make check` says the orchestrator's slot context differs from `context_length` | the preset and `config.yaml` disagree, or `parallel` split the context; `make test` names which |
 | delegated tasks are much slower than before | expected: the `coder` rung is the 8B-active orchestrator model, not a 3B-active coder; `make logs` shows how many expert layers `--fit` kept on the GPU |
+| `make check` fails on the shadow judge's `/health` | the `locoder-julia` service is not running: `make julia && make enable`, or set `shadow_judge.enabled: false`; routing is unaffected either way |
+| `make julia` fails with "Upstream changed the weights" | `SupersonicLabs/Julia-1` published new weights; check what changed, then update `JULIA_WEIGHTS_SHA256` (or pin `JULIA_REVISION` to the old commit) |
+| the report shows many shadow errors saying "lossless context budget" | briefs over Julia-1's 1,024 tokens; the shadow cannot judge those, and they are missing from its scores |
 | every task starts on Claude Code and the reason says "judge unavailable" | the judge preset is down or `judge.gguf` is missing; `make status`, `make check` |
 | Claude Code is skipped although its limit has reset | the lockout came from the fallback or a misread reset; see [handle a Claude Code limit](#handle-a-claude-code-limit) |
 | a skill does not show up in `locoder skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |

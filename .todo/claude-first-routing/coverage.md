@@ -116,3 +116,20 @@ Checked against the pinned Hermes (`7b761da`) installed in a scratch container:
 | ignored keys and wrong slot context caught live | `test_keys_the_router_did_not_echo_were_ignored`; `check_llama` run against a fake router answering as llama.cpp's source does |
 | `make check-offline` | profile and plugin sections pass on the pinned Hermes |
 | startup, KV size, `--fit` placement, a delegated child | **Live** |
+
+## 10 · Julia-1 shadow judge (added after the audit)
+
+Tests in `tests/test_julia.py`.
+
+| criterion | evidence |
+|---|---|
+| shadow recorded, decision the judge's | `test_the_shadow_verdict_is_recorded_beside_the_judge` |
+| a failing shadow never stops routing | `test_a_failing_shadow_is_recorded_and_routing_goes_on` (JudgeError and any exception), `test_a_disabled_shadow_is_not_asked`, `test_an_unknown_shadow_backend_is_an_error_not_a_guess` |
+| typed questions map both ways | `test_questions_become_julias_typed_questions`, `test_julia_limits_are_refused_before_asking`, `test_malformed_answers_are_judge_errors`, `test_routing_judge_through_the_sidecar` |
+| sidecar refusals and crashes | `test_an_overlong_brief_is_refused_with_julias_reason`, `test_the_handler_rejects_what_is_not_a_typed_request`, `test_a_crashing_model_is_a_500_not_a_dead_server`, `test_unreachable_sidecar_is_a_judge_error` |
+| runtime called as upstream expects | `test_self_test_drives_the_upstream_runtime_as_its_parity_tests_do` (stand-ins for torch and the `julia` package) |
+| weights pinned | `test_fetch_pins_the_weights_by_hash` |
+| report compares judges | `test_judge_scores`, `test_report_scores_the_shadow_against_the_judge` |
+| ledger migration | `test_older_ledgers_gain_the_shadow_column` |
+| `make check` | `check_shadow` run on the pinned Hermes against a stand-in sidecar (ok) and with none running (fails with the fix) |
+| image builds, real model answers | **Live** |

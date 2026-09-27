@@ -43,6 +43,14 @@ DEFAULTS: Dict[str, Any] = {
         "limit_fallback_s": 3600,
         "result_chars": 8000,
     },
+    "shadow_judge": {
+        # A second judge asked on every route() and recorded beside the real one, never acted on:
+        # `make report` compares the two against what actually passed. Julia-1 (julia/server.py).
+        "enabled": True,
+        "backend": "julia",
+        "base_url": "http://127.0.0.1:8089",
+        "timeout_s": 5,
+    },
     "graft": {
         # Wire graft into a project the first time a task there is routed (see graft.py).
         "enabled": True,

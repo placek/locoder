@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from . import backends, graft, policy, settings
-from .judge import Judge, JudgeError, SemIfBackend, Verdict, verdict_dict
+from .judge import Judge, JudgeError, JuliaBackend, SemIfBackend, Verdict, verdict_dict
 from .ledger import Ledger
 
 _BRIEF = {
@@ -137,6 +137,14 @@ def hermes_conversation_root(session_id: str) -> str:
                 close()
 
 
+def shadow_judge(cfg: dict) -> Judge:
+    """The judge route() asks second and only records (routing.yaml: shadow_judge)."""
+    sc = cfg["shadow_judge"]
+    if sc["backend"] != "julia":
+        raise JudgeError(f"unknown shadow_judge.backend {sc['backend']!r}; the one built in is 'julia'")
+    return Judge(JuliaBackend(sc["base_url"], sc["timeout_s"]))
+
+
 def _child_refusal() -> Optional[str]:
     """Inside the OpenRouter rung's one-shot run, routing belongs to the orchestrator."""
     if os.environ.get(backends.CHILD_ENV):
@@ -159,11 +167,12 @@ class Router:
 
     def __init__(self, clock: Callable[[], float] = time.time, judge_factory=None, ledger: Optional[Ledger] = None,
                  config_loader: Callable[[], dict] = settings.load,
-                 conversation_root: Callable[[str], str] = hermes_conversation_root):
+                 conversation_root: Callable[[str], str] = hermes_conversation_root, shadow_factory=None):
         self.clock = clock
         self._ledger = ledger
         self._judge_factory = judge_factory or (lambda cfg: Judge(SemIfBackend(
             cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"])))
+        self._shadow_factory = shadow_factory or shadow_judge
         self._load = config_loader
         self._conversation_root = conversation_root
         # Keyed by conversation root; a conversation never switched is "auto".
@@ -208,6 +217,7 @@ class Router:
             verdict = self._judge_factory(cfg).judge(brief)
         except JudgeError as exc:
             judge_error = str(exc)
+        shadow = self._shadow(cfg, brief)
         claude = policy.claude_state(self.ledger, self.clock())
         d = policy.decide(verdict, claude, cfg, judge_error, mode=mode)
         vd, cd = verdict_dict(verdict), claude.as_dict()
@@ -217,12 +227,26 @@ class Router:
         head = git_head(workdir) if workdir else None
         decision_id = self.ledger.add_decision(brief, workdir, d.rung, d.reason, vd, cd,
                                                commit_sha=head[0] if head else None,
-                                               dirty=head[1] if head else None, mode=mode)
+                                               dirty=head[1] if head else None, mode=mode, shadow=shadow)
         out = {"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
                "mode": mode, "judge": vd, "claude": cd, "graft": graft_result}
         if d.rung == policy.HAND_BACK:
             out["next"] = "Nothing may run this task now: tell the user why (the reason) and stop."
         return _json(out)
+
+    def _shadow(self, cfg: dict, brief: str) -> Optional[dict]:
+        """The shadow judge's verdict, or why there is none. Only ever recorded: nothing it
+        returns or raises may reach the decision, so every failure is caught here."""
+        sc = cfg["shadow_judge"]
+        if not sc.get("enabled"):
+            return None
+        start = time.monotonic()
+        try:
+            out = {"backend": sc["backend"], "verdict": verdict_dict(self._shadow_factory(cfg).judge(brief))}
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            out = {"backend": sc.get("backend"), "error": f"{type(exc).__name__}: {exc}"[:300]}
+        out["ms"] = round((time.monotonic() - start) * 1000)
+        return out
 
     # -- escalate -------------------------------------------------------------
     async def escalate(self, args: Dict[str, Any], **kwargs: Any) -> str:

@@ -246,6 +246,39 @@ def _check_vram() -> None:
                                           else ""))
 
 
+def check_shadow() -> None:
+    """The shadow judge only ever records, so route() survives it being down, but the data it is
+    there to collect does not: a stopped container is a gap in the comparison, found here."""
+    print("shadow judge")
+    sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "locoder"))
+    from routing import settings
+    from routing.judge import JudgeError
+    from routing.tools import shadow_judge
+
+    cfg = settings.load()
+    sc = cfg["shadow_judge"]
+    if not sc.get("enabled"):
+        ok("off (shadow_judge.enabled: false)")
+        return
+    base = sc["base_url"].rstrip("/")
+    try:
+        with urllib.request.urlopen(base + "/health", timeout=10) as resp:
+            info = json.loads(resp.read())
+    except OSError as exc:
+        fail(f"{base}/health unreachable ({exc}): make julia && systemctl --user start locoder-julia, "
+             "or set shadow_judge.enabled: false")
+        return
+    ok(f"{info.get('repo')}@{str(info.get('commit'))[:12]}, weights {str(info.get('weights_sha256'))[:12]}…, "
+       f"max_length {info.get('max_length')}, {info.get('threads')} threads")
+    try:
+        v = shadow_judge(cfg).judge("Goal: fix the typo 'recieve' in README.md.\nAcceptance: grep -q receive README.md\n"
+                                    "Constraints: touch nothing else.")
+    except JudgeError as exc:
+        fail(f"shadow judge: {exc}")
+        return
+    ok(f"shadow judge: P(local)={v.p_local:.2f}, difficulty≈{v.expected_difficulty:.2f} on a one-word typo fix")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--offline", action="store_true")
@@ -255,6 +288,7 @@ def main() -> int:
     check_tools()
     if not args.offline:
         check_llama()
+        check_shadow()
     if failures:
         print(f"\n{len(failures)} check(s) failed")
         return 1
