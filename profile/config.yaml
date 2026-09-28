@@ -488,9 +488,14 @@ custom_providers:
 # call executes in the trismegistos-sandbox container (sandbox/Dockerfile, built by
 # `make install`). Projects are mounted at the SAME path as on the host, so a
 # workdir the agent sees is a workdir escalate() can hand to Claude Code.
+#
+# There is deliberately no `cwd` key: an explicit one here overrides TERMINAL_CWD
+# (hermes_cli/config.py, apply_terminal_config_to_env), which is how the wrapper
+# hands the container the directory you launched from. Setting it to "." does not
+# work either — placeholders read as unset and the container starts in /root, as
+# it also does when you launch from outside the docker_volumes mounts below.
 terminal:
   backend: docker
-  cwd: /srv/data/projects
   temp_dir: ''
   docker_image: trismegistos-sandbox:local
   docker_volumes:
