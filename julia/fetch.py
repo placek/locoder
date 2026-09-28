@@ -3,7 +3,7 @@
 The model repository holds the weights and the upstream runtime (the `julia` package) together.
 The revision comes from JULIA_REVISION; the weights must hash to JULIA_WEIGHTS_SHA256, so an
 upstream re-upload fails the build instead of silently changing the judge. What was fetched
-is written to /model/locoder-build.json, which /health reports.
+is written to /model/trismegistos-build.json, which /health reports.
 """
 from __future__ import annotations
 
@@ -38,6 +38,6 @@ requirements = root / "requirements.txt"
 if requirements.is_file():
     subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "-r", str(requirements)], check=True)
 
-(root / "locoder-build.json").write_text(json.dumps(
+(root / "trismegistos-build.json").write_text(json.dumps(
     {"repo": repo, "revision": revision, "commit": commit, "weights_sha256": got}, indent=1))
 print(f"{repo}@{commit}: weights verified")

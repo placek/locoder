@@ -52,7 +52,7 @@ DEFAULTS: Dict[str, Any] = {
         "shadow": "julia",
     },
     "julia": {
-        # The locoder-julia service (JULIA_PORT in the Makefile).
+        # The trismegistos-julia service (JULIA_PORT in the Makefile).
         "base_url": "http://127.0.0.1:8089",
         "timeout_s": 5,
     },
@@ -64,8 +64,8 @@ DEFAULTS: Dict[str, Any] = {
     },
     "openrouter": {
         "enabled": True,
-        # A one-shot run of this Hermes profile: `locoder` sets HERMES_HOME and loads the profile .env.
-        "hermes_bin": "locoder",
+        # A one-shot run of this Hermes profile: `trismegistos` sets HERMES_HOME and loads the profile .env.
+        "hermes_bin": "trismegistos",
         # `custom:` reaches the profile's custom_providers entry; bare `openrouter` is Hermes' built-in.
         "provider": "custom:openrouter",
         "model": "deepseek/deepseek-v4.1-flash",
@@ -103,7 +103,7 @@ def _safe_load(text: str) -> Any:
 
 def load(path: Path | None = None) -> Dict[str, Any]:
     """Defaults, overridden by routing.yaml when it exists. Never raises on a missing file."""
-    path = path or Path(os.environ.get("LOCODER_ROUTING_CONFIG", str(hermes_home() / "routing.yaml")))
+    path = path or Path(os.environ.get("TRISMEGISTOS_ROUTING_CONFIG", str(hermes_home() / "routing.yaml")))
     if not path.is_file():
         return copy.deepcopy(DEFAULTS)
     with path.open(encoding="utf-8") as fh:

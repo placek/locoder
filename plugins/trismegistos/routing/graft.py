@@ -22,7 +22,7 @@ MARKER = "<!-- graft:start -->"
 
 COMMIT_MESSAGE = """Wire in graft
 
-locoder's routing wired graft into this repository the first time it
+trismegistos's routing wired graft into this repository the first time it
 delegated a task here: an AGENTS.md section that points Hermes at the
 graft CLI, and an MCP server, hooks and skill for Claude Code. The graph
 itself (graft/) is a local, regenerable cache and stays out of git.

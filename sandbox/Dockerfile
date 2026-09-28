@@ -1,6 +1,6 @@
 # The container every terminal() call of the agent runs in (Hermes' docker
 # terminal backend). Hermes itself runs on the host; only the commands the
-# agent issues land here. Built by `make install` as locoder-sandbox:local.
+# agent issues land here. Built by `make install` as trismegistos-sandbox:local.
 #
 # Keep it a toolbox, not a platform: language runtimes and the CLI tools the
 # skills lean on. Per-project dependencies belong in the project (a venv,

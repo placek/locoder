@@ -8,7 +8,7 @@ Blocked by: 01, 04
 The `openrouter` rung runs the brief as a Hermes child on a cheaper non-Anthropic
 OpenRouter model, instead of `claude -p` pointed at OpenRouter. Ticket 04 found that
 `delegate_task` cannot choose a model per task, so `escalate()` spawns a headless
-one-shot run (`locoder -z <brief> -m <model> --provider custom:openrouter --in
+one-shot run (`trismegistos -z <brief> -m <model> --provider custom:openrouter --in
 <workdir> --usage-file <file> -t file,terminal,web,todo`); see ticket 04's findings for exit codes,
 the usage file and the non-interactive model guard. The Claude Code rung is unchanged.
 
@@ -23,7 +23,7 @@ flow and "both paid rungs are the same CLI" section, and `make check`'s wording.
 ## Acceptance criteria
 
 - [ ] A task routed to `openrouter` runs as a Hermes child on the configured model, with its commands in the sandbox.
-  (Command, exit codes and usage file are covered by tests against a fake `locoder`; the
+  (Command, exit codes and usage file are covered by tests against a fake `trismegistos`; the
   sandbox part needs the live run on alpha.)
 - [x] The attempt's cost from OpenRouter is recorded in the ledger.
 - [x] Nothing launches `claude` against OpenRouter any more.

@@ -1,4 +1,4 @@
-name: locoder-routing
+name: trismegistos-routing
 version: 0.1.0
 description: "Decides where a delegated coding task starts (local coder, Claude Code, or a one-shot Hermes run on OpenRouter), runs the paid rungs, routes around Claude Code while a limit has it locked out, and logs every decision and outcome to a local SQLite ledger."
 author: placek

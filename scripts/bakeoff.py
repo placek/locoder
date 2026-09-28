@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "locoder"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "trismegistos"))
 from routing import backends, settings  # noqa: E402
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
@@ -158,11 +158,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--tasks", type=int, default=10)
     ap.add_argument("--ledger", type=Path, default=None)
     ap.add_argument("--scratch", type=Path, default=None,
-                    help="where worktrees go (default: <first workdir root>/.locoder-bakeoff, inside the sandbox mount)")
+                    help="where worktrees go (default: <first workdir root>/.trismegistos-bakeoff, inside the sandbox mount)")
     ap.add_argument("--include-dirty", action="store_true",
                     help="also replay tasks routed from a dirty tree (their uncommitted files are missing)")
     ap.add_argument("--check-in", choices=("sandbox", "host"), default="sandbox")
-    ap.add_argument("--image", default="locoder-sandbox:local")
+    ap.add_argument("--image", default="trismegistos-sandbox:local")
     ap.add_argument("--check-timeout", type=int, default=900)
     args = ap.parse_args(argv)
 
@@ -181,7 +181,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not tasks:
         return 1
 
-    scratch = args.scratch or Path(cfg["claude"]["workdir_roots"][0]) / ".locoder-bakeoff"
+    scratch = args.scratch or Path(cfg["claude"]["workdir_roots"][0]) / ".trismegistos-bakeoff"
     scratch.mkdir(parents=True, exist_ok=True)
     scores = {m: Score() for m in models}
     for task in tasks:

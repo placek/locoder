@@ -24,7 +24,7 @@ each harness's own channel.
 |---|---|
 | orchestrator, coder, OpenRouter one-shot (Hermes) | `AGENTS.md` section → `graft` CLI in the sandbox image |
 | Claude Code rung (`claude -p` on the host) | project `.mcp.json` (loaded by `-p` without a prompt), tools allowed by `mcp__graft` in `claude.allowed_tools`, project hooks and skill |
-| `route()` wiring a project | the pinned host install, on PATH via the `locoder` wrapper |
+| `route()` wiring a project | the pinned host install, on PATH via the `trismegistos` wrapper |
 
 ## Safety rules for automatic wiring
 

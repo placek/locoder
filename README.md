@@ -1,8 +1,8 @@
-# locoder
+# trismegistos
 
 A local coding agent in one repository: the llama.cpp router that serves the
 models, a pinned [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-install, the `locoder` profile (config, soul, skills, plugins), and the routing
+install, the `trismegistos` profile (config, soul, skills, plugins), and the routing
 that decides where each delegated task runs.
 
 **Claude Code is the default worker**, spent freely. Local models take the work
@@ -33,7 +33,7 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
             │                                   (after the last rung: back to you)
             ▼
    coder: delegate_task          claude: escalate()        openrouter: escalate()
-   (a child on the               claude -p on the          locoder -z: this Hermes
+   (a child on the               claude -p on the          trismegistos -z: this Hermes
     orchestrator's own           Max plan                  profile, one-shot, on a
     model: local, free)                                    cheap OpenRouter model
             │
@@ -57,11 +57,11 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   orchestrator has a single KV slot: one judge query there would evict a
   128k-token conversation. A Jev or CLM backend would be another
   class with the same `system_one(state, questions)` method
-  (`plugins/locoder/routing/judge.py`).
+  (`plugins/trismegistos/routing/judge.py`).
 - **A second judge is watched, not obeyed.** Every `route()` also asks
   Supersonic Labs' Julia-1 the same questions, in the background. Julia-1 is a
   144M-parameter decision model built for this interface, served on the CPU by
-  the `locoder-julia` container. Its verdict goes into the ledger beside the
+  the `trismegistos-julia` container. Its verdict goes into the ledger beside the
   real one and never changes a decision. `make report` scores both against the
   tasks that passed or failed. Which judge routes and which only watches is one
   setting; see [choose the judge](#choose-the-judge-and-compare-them).
@@ -78,13 +78,13 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
   judge gives it a fair chance, OpenRouter otherwise. After the reset, Claude
   Code is the default again.
 - **OpenRouter runs inside Hermes.** The OpenRouter rung is a one-shot run of
-  this same profile (`locoder -z <brief> -m <model> --provider
+  this same profile (`trismegistos -z <brief> -m <model> --provider
   custom:openrouter --in <workdir> -t file,terminal,web,todo`) on a cheaper
   model: Hermes stays the harness, its commands go to the sandbox, and
   `--usage-file` reports the cost. The run is the worker, not an orchestrator:
   its toolsets leave out `delegate_task`, `clarify` and the routing tools, its
   brief starts with a line saying so, and the routing plugin refuses inside it
-  (`LOCODER_ROUTING_CHILD`), so it cannot re-delegate or spend again.
+  (`TRISMEGISTOS_ROUTING_CHILD`), so it cannot re-delegate or spend again.
   `delegate_task` cannot pick a model per task, which is why it is a separate
   process rather than a child. Without a TTY, Hermes refuses a model
   priced over $20/M input or $100/M output, so pick a cheap one.
@@ -106,22 +106,22 @@ Contents: [how work flows](#how-work-flows) · [layout](#layout) ·
 | `llama/presets.ini` | orchestrator and judge presets | mounted into the router container |
 | `scripts/stack.py` | the settings presets, `config.yaml` and `routing.yaml` must agree on | run by `make test` and `make check` |
 | `llama/image.lock` | llama.cpp CUDA image, pinned by digest | created by `make pin-llama`; commit it |
-| `systemd/locoder-llama.service.in` | the router as a user service | `~/.config/systemd/user/` |
-| `hermes.rev` | the Hermes commit in use | `~/.local/share/locoder/hermes` (git + uv venv) |
+| `systemd/trismegistos-llama.service.in` | the router as a user service | `~/.config/systemd/user/` |
+| `hermes.rev` | the Hermes commit in use | `~/.local/share/trismegistos/hermes` (git + uv venv) |
 | `profile/` | `config.yaml`, `SOUL.md`, `routing.yaml`, `env.example` | symlinked into the Hermes home |
 | `skills/` | the house method; see the [skill index](#skill-index) | symlinked as the profile's skills root |
-| `plugins/locoder/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
+| `plugins/trismegistos/routing/` | `route`, `escalate`, `route_outcome`, `routing_status`, `routing_mode` | symlinked plugins dir |
 | `plugins/web/defuddle/` | clean page extraction + `web_research` | symlinked plugins dir |
-| `sandbox/Dockerfile` | the container every agent `terminal()` call runs in, with the pinned graft | image `locoder-sandbox:local` |
-| `julia/` | the Julia-1 shadow judge: `Dockerfile`, `fetch.py` (download, hash check), `server.py` (HTTP) | image `locoder-julia:local` |
-| `systemd/locoder-julia.service.in` | the shadow judge as a user service, on `127.0.0.1:8089` | `~/.config/systemd/user/` |
-| `bin/locoder.in` | the `locoder` wrapper: pinned Hermes + this home + its `.env` | `~/.local/bin/locoder` |
+| `sandbox/Dockerfile` | the container every agent `terminal()` call runs in, with the pinned graft | image `trismegistos-sandbox:local` |
+| `julia/` | the Julia-1 shadow judge: `Dockerfile`, `fetch.py` (download, hash check), `server.py` (HTTP) | image `trismegistos-julia:local` |
+| `systemd/trismegistos-julia.service.in` | the shadow judge as a user service, on `127.0.0.1:8089` | `~/.config/systemd/user/` |
+| `bin/trismegistos.in` | the `trismegistos` wrapper: pinned Hermes + this home + its `.env` | `~/.local/bin/trismegistos` |
 | `scripts/` | install, bump, check, report, bakeoff | — |
 | `tests/` | routing plugin, report, bake-off, shadow-judge and stack tests (no Hermes needed) | — |
 | `.todo/` | specs and tickets, committed with the code | — |
 
 State lives outside the repo: the Hermes home (sessions, memories, the routing
-ledger at `routing/ledger.db`, `.env`) is `~/.local/state/locoder/home`.
+ledger at `routing/ledger.db`, `.env`) is `~/.local/state/trismegistos/home`.
 
 `make install` symlinks the running agent's home straight into this checkout,
 so editing a skill, plugin or profile file changes the live agent; `AGENTS.md`
@@ -157,12 +157,12 @@ into its image, so the build needs to reach both.
 ## Install
 
 ```sh
-git clone git@github.com:placek/locoder.git && cd locoder
-make install        # Hermes venv, profile links, defuddle, sandbox image, router unit, `locoder` on PATH
-$EDITOR ~/.local/state/locoder/home/.env     # OPENROUTER_API_KEY
+git clone git@github.com:placek/trismegistos.git && cd trismegistos
+make install        # Hermes venv, profile links, defuddle, sandbox image, router unit, `trismegistos` on PATH
+$EDITOR ~/.local/state/trismegistos/home/.env     # OPENROUTER_API_KEY
 make enable         # start the router now and at login (loginctl enable-linger for boot)
 make check          # plugins loaded, tools visible, presets served, both judges answering
-make tui            # or just: locoder
+make tui            # or just: trismegistos
 ```
 
 Then, once:
@@ -182,14 +182,14 @@ check` passes:
   port 8088. The router now listens on `127.0.0.1:8088` only, and Hermes runs
   on the host, so nothing needs a bridge rule.
 - `modules/utils/hermes-agent.nix`: but see below before removing it.
-- `~/.hermes/profiles/locoder`: the old profile. Sessions and memories there
+- `~/.hermes/profiles/trismegistos`: the old profile. Sessions and memories there
   are not migrated; this home starts clean.
 
 **Careful:** the brain profile's Telegram gateway (`hermes-gateway.service`,
 `~/.hermes`) runs the Hermes binary that `hermes-agent.nix` installs. Removing
 the module removes that binary too. Either keep the module until the brain
 profile moves, or point that service at this repo's venv
-(`~/.local/share/locoder/hermes/.venv/bin/hermes`) with its own `HERMES_HOME`.
+(`~/.local/share/trismegistos/hermes/.venv/bin/hermes`) with its own `HERMES_HOME`.
 
 ## How-to
 
@@ -240,11 +240,11 @@ not tried again until Hermes restarts.
   Claude Code loads `.mcp.json`, the hooks and the skill on its own in `-p`
   runs; `mcp__graft` in `claude.allowed_tools` lets it call the tools.
 - **Wire a project by hand** (e.g. one you only work on outside the harness):
-  run the two commands above in its root with `locoder`'s PATH, or in the
+  run the two commands above in its root with `trismegistos`'s PATH, or in the
   sandbox, and commit what they wrote.
 - **Turn it off:** `graft.enabled: false` in `profile/routing.yaml`. To unwire
   a project, `graft uninstall -y --no-global` in it and commit.
-- **No telemetry:** the `locoder` wrapper and the sandbox set `DO_NOT_TRACK=1`,
+- **No telemetry:** the `trismegistos` wrapper and the sandbox set `DO_NOT_TRACK=1`,
   so graft sends no usage pings. Its daily npm version check still runs.
 - **The LLM layer is not used:** `graft build --deep` (concept nodes and
   per-symbol summaries) needs a provider key and is left off; the structural
@@ -280,7 +280,7 @@ and Claude Code is skipped until the reset its error stated. In `claude` mode
 the task comes back to you with the reset time instead. Afterwards, check that the reset was read:
 
 ```sh
-sqlite3 ~/.local/state/locoder/home/routing/ledger.db \
+sqlite3 ~/.local/state/trismegistos/home/routing/ledger.db \
   "SELECT datetime(ts,'unixepoch','localtime'), datetime(until,'unixepoch','localtime'), reset_source, raw
    FROM limit_hits ORDER BY ts DESC LIMIT 5"
 ```
@@ -288,7 +288,7 @@ sqlite3 ~/.local/state/locoder/home/routing/ledger.db \
 `reset_source = fallback` means the reset time was not understood and the
 lockout was the one-hour `claude.limit_fallback_s`. Add the wording in `raw` as
 a case in `tests/test_routing.py` (`test_reset_time_reads_clock_date_and_relative_forms`),
-fix `reset_time()` in `plugins/locoder/routing/backends.py`, and `make test`.
+fix `reset_time()` in `plugins/trismegistos/routing/backends.py`, and `make test`.
 Claude Code's `-p` wording is undocumented, so the first real hits are the
 ones to check.
 
@@ -315,7 +315,7 @@ make report
 
 Two judges are built in:
 - **`semif`**: the `judge` preset, a small chat model read through its logprobs.
-- **`julia`**: Julia-1 on the CPU, in the `locoder-julia` container.
+- **`julia`**: Julia-1 on the CPU, in the `trismegistos-julia` container.
 
 `profile/routing.yaml` picks their roles:
 
@@ -417,14 +417,14 @@ from OpenRouter's model list, and an unlisted alias costs "unknown".
 In a scratch git repo under `/srv/data/projects`:
 
 ```sh
-locoder -z "Create hello.txt containing the word hi" -m deepseek/deepseek-v4.1-flash \
+trismegistos -z "Create hello.txt containing the word hi" -m deepseek/deepseek-v4.1-flash \
   --provider custom:openrouter --in "$PWD" --usage-file /tmp/usage.json -t file,terminal,web,todo; echo "exit=$?"
 cat hello.txt /tmp/usage.json
 ```
 
 Expect exit 0, `hello.txt`, and a non-zero `estimated_cost_usd`. This is what
 `escalate(backend="openrouter")` runs, minus the worker preamble it puts in
-front of the brief and the `LOCODER_ROUTING_CHILD=1` it sets.
+front of the brief and the `TRISMEGISTOS_ROUTING_CHILD=1` it sets.
 
 ### Tune the local model
 
@@ -523,7 +523,7 @@ make status         both services, served presets, the shadow judge's model comm
 make logs           follow the router and the shadow judge
 make check          the installed stack is wired: profile, plugins, host tools, router, both judges
 make check-offline  the same without the router and the judges
-make tui            open the agent (same as `locoder`)
+make tui            open the agent (same as `trismegistos`)
 make test           unit tests, no Hermes needed
 make report         the ledger against the routing goals
 make bakeoff MODELS=a,b [TASKS=10]   pick the OpenRouter model
@@ -548,7 +548,7 @@ All register in the `coding` toolset, so they stay visible under
 ### `routing.yaml`
 
 Linked into the Hermes home and re-read on every tool call. Keys left out fall
-back to the defaults in `plugins/locoder/routing/settings.py`.
+back to the defaults in `plugins/trismegistos/routing/settings.py`.
 
 | key | default | meaning |
 |---|---|---|
@@ -571,19 +571,19 @@ back to the defaults in `plugins/locoder/routing/settings.py`.
 | `graft.bin` | `graft` | the host graft (the wrapper puts the pinned one on PATH) |
 | `graft.timeout_s` | 300 | per `graft init` / `graft build` |
 | `openrouter.enabled` | true | off: the coder is all that is left while Claude Code is locked out |
-| `openrouter.hermes_bin` | `locoder` | what runs the one-shot Hermes run |
+| `openrouter.hermes_bin` | `trismegistos` | what runs the one-shot Hermes run |
 | `openrouter.provider` | `custom:openrouter` | the profile's provider entry (bare `openrouter` is Hermes' built-in) |
 | `openrouter.model` | `deepseek/deepseek-v4.1-flash` | placeholder until a bake-off picks one |
 | `openrouter.toolsets` | `file,terminal,web,todo` | `-t` for the one-shot run: no `delegate_task`, `clarify` or routing tools |
 | `openrouter.timeout_s` | 1800 | per run |
 | `judge.backend` | `semif` | the judge `route()` acts on: `semif` (`llama.judge_model`) or `julia` |
 | `judge.shadow` | `julia` | also asked, in the background, and only recorded: the other judge, or `none` |
-| `julia.base_url` | `http://127.0.0.1:8089` | the `locoder-julia` service (`JULIA_PORT` in the `Makefile`) |
+| `julia.base_url` | `http://127.0.0.1:8089` | the `trismegistos-julia` service (`JULIA_PORT` in the `Makefile`) |
 | `julia.timeout_s` | 5 | per request; both questions go in one |
 
 ### The ledger
 
-`~/.local/state/locoder/home/routing/ledger.db`. Older ledgers gain new columns
+`~/.local/state/trismegistos/home/routing/ledger.db`. Older ledgers gain new columns
 in place when the plugin opens them.
 
 - `decisions` — one row per `route()`: the brief, workdir, starting rung and
@@ -632,22 +632,22 @@ Invoke any of them as `/<name>`.
 | symptom | cause and fix |
 |---|---|
 | `make hermes` fails with `Failed to parse uv.lock` | `uv` is too old; use 0.12 or newer |
-| a one-shot run fails with `_eval_type() got an unexpected keyword argument 'prefer_fwd_module'` | the Hermes venv is on Python 3.14.0rc2; remove `~/.local/share/locoder/hermes/.venv` and `.locoder-rev` there, then `PYTHON=3.14.<n> make hermes` with a release version |
+| a one-shot run fails with `_eval_type() got an unexpected keyword argument 'prefer_fwd_module'` | the Hermes venv is on Python 3.14.0rc2; remove `~/.local/share/trismegistos/hermes/.venv` and `.trismegistos-rev` there, then `PYTHON=3.14.<n> make hermes` with a release version |
 | the OpenRouter rung exits 1 with "Refusing this startup model override in non-interactive mode" | the model tripped Hermes' cost guard (over $20/M input or $100/M output) or is a data-training tier; pick a cheaper model, or for `:free` tiers set `security.allow_data_training_tiers_noninteractive: true` in `config.yaml` |
-| `make check` warns `locoder not on PATH` | the OpenRouter rung cannot start; add `~/.local/bin` to PATH or set `openrouter.hermes_bin` to the wrapper's full path |
+| `make check` warns `trismegistos not on PATH` | the OpenRouter rung cannot start; add `~/.local/bin` to PATH or set `openrouter.hermes_bin` to the wrapper's full path |
 | OpenRouter attempts show cost 0 and `cost_status: unknown` | the model id is an alias OpenRouter's price list does not have; use a concrete id |
 | the reason says the judge's coverage is below `policy.min_coverage` | the judge model mostly answers outside the allowed tokens: try another small instruct model as `judge.gguf` (`make check` warns on it), or lower `policy.min_coverage` |
 | the router log shows the orchestrator failing to allocate its KV cache, or `make check` says it failed to load | too little VRAM for the context at load time: close what holds VRAM and `make restart`; otherwise lower `ctx-size` and `model.context_length` together (at least 64000), or set both cache types to `q4_0` |
 | `make check` says the router ignored a preset key | a typo, an option this llama.cpp image lacks, or an alias of the option's long name; the router only logs a warning and runs without it |
 | `make check` says the orchestrator's slot context differs from `context_length` | the preset and `config.yaml` disagree, or `parallel` split the context; `make test` names which |
 | delegated tasks are much slower than before | expected: the `coder` rung is the 8B-active orchestrator model, not a 3B-active coder; `make logs` shows how many expert layers `--fit` kept on the GPU |
-| `make check` fails on Julia-1's `/health` | the `locoder-julia` service is not running: `make julia && make enable`, or stop asking it (`judge.shadow: none`, or `backend: semif`). As the shadow it costs only data; as the routing judge every task starts on Claude Code until it is back |
+| `make check` fails on Julia-1's `/health` | the `trismegistos-julia` service is not running: `make julia && make enable`, or stop asking it (`judge.shadow: none`, or `backend: semif`). As the shadow it costs only data; as the routing judge every task starts on Claude Code until it is back |
 | `make test` says `shadow_judge` is no longer read | the block was renamed: `judge.backend` / `judge.shadow` pick the roles, `julia.base_url` / `julia.timeout_s` reach the service |
 | `make julia` fails with "Upstream changed the weights" | `SupersonicLabs/Julia-1` published new weights; check what changed, then update `JULIA_WEIGHTS_SHA256` (or pin `JULIA_REVISION` to the old commit) |
 | the report shows many shadow errors saying "lossless context budget" | briefs over Julia-1's 1,024 tokens; the shadow cannot judge those, and they are missing from its scores |
 | every task starts on Claude Code and the reason says "judge unavailable" | the judge preset is down or `judge.gguf` is missing; `make status`, `make check` |
 | Claude Code is skipped although its limit has reset | the lockout came from the fallback or a misread reset; see [handle a Claude Code limit](#handle-a-claude-code-limit) |
-| a skill does not show up in `locoder skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |
+| a skill does not show up in `trismegistos skills list` | a symlink inside `skills/`, a `name` that differs from its directory, or invalid frontmatter; see `AGENTS.md` |
 | `route()` says `graft: skipped — uncommitted changes in files graft writes` | commit or stash those files (`AGENTS.md`, `.mcp.json`, `.gitignore`, `.claude/…`); the next routed task wires the repo |
 | `route()` says `graft: failed` | the reason names the step (`init`, `build`, or the commit, e.g. a pre-commit hook); fix it and restart Hermes, or wire by hand |
 | `make check` fails on `graft (host)` or `graft (sandbox)` | a copy is missing or not at `GRAFT_VERSION`; `make install` |
@@ -662,7 +662,7 @@ Invoke any of them as `/<name>`.
   the run fails as an ordinary error instead of falling back, or the reset is
   unreadable and the lockout is `claude.limit_fallback_s`. Every hit keeps its
   raw text in the ledger's `limit_hits.raw`; `LIMIT_PATTERN` and
-  `reset_time()` in `plugins/locoder/routing/backends.py` are the place to fix.
+  `reset_time()` in `plugins/trismegistos/routing/backends.py` are the place to fix.
 - `escalate()` runs Claude Code on the host (it needs your Max login), with the
   tool allow-list in `routing.yaml` and workdirs restricted to
   `claude.workdir_roots`. The local agent's own commands, and the OpenRouter

@@ -373,9 +373,9 @@ def test_self_test_drives_the_upstream_runtime_as_its_parity_tests_do(tmp_path):
         "    from julia.inference import CALLS\n"
         "    assert CALLS[0][1:] == ('cpu', 1024, 512, True), CALLS\n"
         "    return fake_predict(state, questions)\n" % str(ROOT / "tests"))
-    (tmp_path / "model" / "locoder-build.json").write_text(json.dumps({"commit": "abc123"}))
+    (tmp_path / "model" / "trismegistos-build.json").write_text(json.dumps({"commit": "abc123"}))
     env = {"PATH": "/usr/bin:/bin", "JULIA_CHECKPOINT": str(tmp_path / "model"), "JULIA_THREADS": "3",
-           "PYTHONPATH": f"{tmp_path / 'stub'}:{ROOT / 'plugins' / 'locoder'}"}
+           "PYTHONPATH": f"{tmp_path / 'stub'}:{ROOT / 'plugins' / 'trismegistos'}"}
     out = subprocess.run([sys.executable, str(ROOT / "julia" / "server.py"), "--self-test"],
                          capture_output=True, text=True, env=env, timeout=60)
     assert out.returncode == 0, out.stderr
@@ -407,7 +407,7 @@ def test_fetch_pins_the_weights_by_hash(tmp_path, weights, ok):
            "JULIA_WEIGHTS_SHA256": hashlib.sha256(b"the real weights").hexdigest().upper()}
     out = subprocess.run([sys.executable, str(ROOT / "julia" / "fetch.py")], capture_output=True, text=True,
                          env=env, timeout=60)
-    build = tmp_path / "model" / "locoder-build.json"
+    build = tmp_path / "model" / "trismegistos-build.json"
     if ok:
         assert out.returncode == 0, out.stderr
         assert json.loads(build.read_text())["commit"] == "c0ffee"

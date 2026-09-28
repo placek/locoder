@@ -2,7 +2,7 @@
 
 The Claude Code rung runs ``claude -p`` on the host (it needs the Max login) in the task's
 workdir, with an explicit tool allow-list, and reads its ``--output-format json`` result.
-The OpenRouter rung runs this same Hermes profile one-shot (``locoder -z``) on a cheaper
+The OpenRouter rung runs this same Hermes profile one-shot (``trismegistos -z``) on a cheaper
 OpenRouter model: Hermes stays the harness, its commands go to the sandbox like any
 session's, and ``--usage-file`` reports what the run cost.
 """
@@ -110,7 +110,7 @@ _AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
 
 # Set in the OpenRouter rung's environment. The one-shot run loads this same profile, so its
 # routing plugin sees this and refuses: a delegated run must not route, escalate or re-delegate.
-CHILD_ENV = "LOCODER_ROUTING_CHILD"
+CHILD_ENV = "TRISMEGISTOS_ROUTING_CHILD"
 
 # Prepended to the brief for the OpenRouter rung: the profile's SOUL and auto-loaded `delegate`
 # skill tell the orchestrator to delegate, but this run is the worker.
@@ -216,7 +216,7 @@ async def run(cfg: dict, rung: str, brief: str, workdir: Path, max_turns: Option
     if rung not in ("claude", "openrouter"):
         raise BackendError(f"not a paid rung: {rung}")
     timeout = float(cfg["openrouter" if rung == "openrouter" else "claude"]["timeout_s"])
-    with tempfile.TemporaryDirectory(prefix="locoder-escalate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="trismegistos-escalate-") as tmp:
         usage_file = Path(tmp) / "usage.json"
         cmd = command(cfg, rung, brief, max_turns, usage_file=usage_file, workdir=workdir)
         started = time.monotonic()
