@@ -11,6 +11,7 @@ custom_providers:
     model: orchestrator
     models:
       orchestrator: {}
+      judge: {}
     models_discovered: true
   - name: openrouter
     base_url: https://openrouter.ai/api/v1
@@ -28,11 +29,8 @@ custom_providers:
       sakana/fugu-ultra-v2: {}
       sakana/fugu-max: {}
       inclusionai/ling-3.0-flash-vl: {}
-      inclusionai/ling-3.0-flash-vl:free: {}
       deepseek/deepseek-v4.1-flash: {}
       inception/mercury-2.5: {}
-      nex-agi/nex-n2.5-mini:free: {}
-      nex-agi/nex-n2.5-pro:free: {}
       openai/gpt-6-astra: {}
       openai/gpt-6-astra:batch: {}
       openai/gpt-6-astra-pro: {}
@@ -126,7 +124,6 @@ custom_providers:
       google/gemini-3-pro-image: {}
       cohere/north-mini-code:free: {}
       z-ai/glm-5.2: {}
-      z-ai/glm-5.2:free: {}
       openrouter/fusion: {}
       moonshotai/kimi-k2.7-code: {}
       ~anthropic/claude-fable-latest: {}
@@ -435,7 +432,6 @@ custom_providers:
       microsoft/wizardlm-2-8x22b: {}
       openai/gpt-4-turbo: {}
       openai/gpt-4-turbo:batch: {}
-      anthropic/claude-3-haiku: {}
       mistralai/mistral-large: {}
       openai/gpt-3.5-turbo-0613: {}
       openrouter/auto: {}
@@ -468,10 +464,18 @@ custom_providers:
       z-ai/glm-5.3-flashx: {}
       unbiased/pareto: {}
       deepseek/deepseek-v4.1-flash:batch: {}
-      nex-agi/nex-n2.5-mini: {}
-      nex-agi/nex-n2.5-pro: {}
       qwen/qwen3.8-27b:free: {}
       openai/gpt-oss-20b:batch: {}
+      typesafe/jev-router: {}
+      perceptron/perceptron-mk1.5: {}
+      fireworks/ember-1: {}
+      z-ai/glm-5.3-prime: {}
+      qwen/qwen3.8-max-prime: {}
+      stealth/space-bunny-alpha: {}
+      aion-labs/aion-3.5-mini: {}
+      aion-labs/aion-3.5: {}
+      mistralai/mistral-large-2512: {}
+      openai/gpt-oss-120b:batch: {}
     models_discovered: true
 
 # ─────────────────────────────────────────────────────────────────────────────

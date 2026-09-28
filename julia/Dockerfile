@@ -11,8 +11,16 @@ ENV PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1 \
 
 # CPU-only torch (the CUDA wheels are gigabytes this never uses), then what the upstream
 # runtime loads: the mmBERT tokenizer and encoder config, safetensors weights.
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch \
- && pip install huggingface_hub safetensors tokenizers transformers numpy
+#
+# Pinned, like the weights are. Julia-1's fast encoder path (julia/router/encoder.py) reaches
+# into private transformers internals, so its pyproject.toml asks for transformers>=5.0,<5.1;
+# by 5.17 ModernBert built its masks in create_bidirectional_mask() instead of
+# ModernBertModel._update_attention_mask, and the self-test died on AttributeError. Unpinned,
+# this image kept building until PyPI moved on. Re-pin against the model's pyproject.toml
+# whenever JULIA_REVISION moves; the self-test says whether the new pair agrees.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0 \
+ && pip install huggingface_hub==1.33.0 safetensors==0.8.0 tokenizers==0.22.2 \
+                transformers==5.0.0 numpy==2.5.3
 
 # The Makefile passes all three; see JULIA_REVISION and JULIA_WEIGHTS_SHA256 there.
 ARG JULIA_REPO=SupersonicLabs/Julia-1
