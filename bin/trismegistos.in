@@ -19,4 +19,10 @@ if [ -f "$HERMES_HOME/.env" ]; then
     . "$HERMES_HOME/.env"
     set +a
 fi
+# terminal() runs in the sandbox container, and its working directory comes from
+# terminal.cwd in config.yaml — an explicit key there overrides this env var
+# (hermes_cli/config.py: apply_terminal_config_to_env), so the key is deliberately
+# absent and the launch directory fills it instead. Outside the docker_volumes
+# mounts the container has no such path and starts in /root.
+export TERMINAL_CWD="$PWD"
 exec "@PREFIX@/hermes/.venv/bin/hermes" "$@"
