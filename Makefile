@@ -34,7 +34,7 @@ GPU_ARGS    ?= --device=nvidia.com/gpu=all
 DOCKER      ?= $(shell command -v docker)
 LLAMA_TAG   ?= ghcr.io/ggml-org/llama.cpp:server-cuda
 SANDBOX_IMAGE := locoder-sandbox:local
-# The shadow judge (routing.yaml: shadow_judge). The weights hash is SupersonicLabs/Julia-1's
+# Julia-1, one of the two judges (routing.yaml: judge, julia). The weights hash is SupersonicLabs/Julia-1's
 # model.safetensors: the build fails if upstream changes it. Pin JULIA_REVISION to the commit
 # `make status` reports once you trust it.
 JULIA_IMAGE          := locoder-julia:local

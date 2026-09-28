@@ -1,4 +1,4 @@
-"""Julia-1 over HTTP, for the routing plugin's shadow judge (routing.yaml: shadow_judge).
+"""Julia-1 over HTTP, one of the routing plugin's judges (routing.yaml: judge, julia).
 
     POST /predict  {"state": ..., "questions": {...}}  ->  {"answers": {...}}
     GET  /health   ->  what was built: repository, commit, weights hash, settings

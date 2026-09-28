@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "locoder"))
@@ -75,44 +75,63 @@ def judge_scores(pairs: List[Tuple[dict, bool]], near: float, max_difficulty: fl
     return {"n": n, "brier": brier, "log_loss": loss, "picks": len(picks), "picks_passed": sum(picks)}
 
 
-def _shadow_section(db: sqlite3.Connection, pol: dict, say) -> None:
-    rows = db.execute("SELECT id, verdict, shadow FROM decisions WHERE shadow IS NOT NULL").fetchall()
+def _verdicts_by_judge(db: sqlite3.Connection) -> Dict[str, Dict[str, dict]]:
+    """Every recorded verdict, keyed by the judge that made it and then by decision: the routing
+    one (judge_backend; rows from before the switch existed are semif) and the shadow's."""
+    out: Dict[str, Dict[str, dict]] = {}
+    for r in db.execute("SELECT id, verdict, shadow, COALESCE(judge_backend, 'semif') judge FROM decisions"):
+        if r["verdict"]:
+            out.setdefault(r["judge"], {})[r["id"]] = json.loads(r["verdict"])
+        shadow = json.loads(r["shadow"]) if r["shadow"] else {}
+        if shadow.get("verdict"):
+            out.setdefault(shadow.get("backend") or "shadow", {})[r["id"]] = shadow["verdict"]
+    return out
+
+
+def _shadow_section(db: sqlite3.Connection, cfg: dict, say) -> None:
+    pol = cfg["policy"]
+    rows = db.execute("SELECT shadow FROM decisions WHERE shadow IS NOT NULL").fetchall()
     if not rows:
         return
-    shadows = {r["id"]: json.loads(r["shadow"]) for r in rows}
-    backend = next(iter(shadows.values())).get("backend") or "shadow"
-    answered = [s for s in shadows.values() if s.get("verdict")]
-    errors: dict = {}
-    for s in shadows.values():
-        if s.get("error"):
-            errors[s["error"].split(":")[0]] = errors.get(s["error"].split(":")[0], 0) + 1
-    ms = sorted(s["ms"] for s in answered if "ms" in s)
-    say(f"\nshadow judge ({backend}): answered {len(answered)} of {len(shadows)} decisions"
-        + (f", median {ms[len(ms) // 2]} ms" if ms else "")
-        + (f"; errors: {', '.join(f'{k} ×{v}' for k, v in sorted(errors.items(), key=lambda kv: -kv[1]))}"
-           if errors else ""))
+    say("\njudges compared (the routing one decides; the shadow is only recorded)")
+    by_backend: Dict[str, list] = {}
+    for r in rows:
+        s = json.loads(r["shadow"])
+        by_backend.setdefault(s.get("backend") or "shadow", []).append(s)
+    for backend, records in sorted(by_backend.items()):
+        answered = [s for s in records if s.get("verdict")]
+        errors: Dict[str, int] = {}
+        for s in records:
+            if s.get("error"):
+                kind = s["error"].split(":")[0]
+                errors[kind] = errors.get(kind, 0) + 1
+        ms = sorted(s["ms"] for s in answered if "ms" in s)
+        say(f"  as shadow, {backend} answered {len(answered)} of {len(records)} decisions"
+            + (f", median {ms[len(ms) // 2]} ms" if ms else "")
+            + (f"; errors: {', '.join(f'{k} ×{v}' for k, v in sorted(errors.items(), key=lambda kv: -kv[1]))}"
+               if errors else ""))
 
-    labelled = db.execute("""
-        SELECT d.id, d.verdict, a.verified FROM decisions d
-        JOIN attempts a ON a.decision_id = d.id AND a.rung = 'coder'
-        WHERE d.shadow IS NOT NULL AND a.verified IS NOT NULL""").fetchall()
-    both = [(json.loads(r["verdict"]), shadows[r["id"]]["verdict"], bool(r["verified"])) for r in labelled
-            if r["verdict"] and shadows[r["id"]].get("verdict")]
-    say(f"  scored against {len(both)} labelled coder attempts that both judges answered")
-    if not both:
+    verdicts = _verdicts_by_judge(db)
+    labels = {r["decision_id"]: bool(r["verified"]) for r in db.execute(
+        "SELECT decision_id, verified FROM attempts WHERE rung='coder' AND verified IS NOT NULL")}
+    names = sorted(verdicts)
+    common = [d for d in labels if all(d in verdicts[n] for n in names)]
+    say(f"  scored against {len(common)} labelled coder attempts that {' and '.join(names)} both answered")
+    if not common or len(names) < 2:
         return
     near, most = float(pol["local_threshold"]), float(pol["local_max_difficulty"])
-    rate = sum(y for _, _, y in both) / len(both)
-    base = {"p_local": rate, "expected_difficulty": 0.0}
-    for name, pairs in (("judge", [(j, y) for j, _, y in both]), (backend, [(s, y) for _, s, y in both]),
-                        ("base rate", [(base, y) for _, _, y in both])):
+    rate = sum(labels[d] for d in common) / len(common)
+    routing = cfg["judge"]["backend"]
+    rows_out = [(f"{n} (routes)" if n == routing else n, [(verdicts[n][d], labels[d]) for d in common]) for n in names]
+    rows_out.append(("base rate", [({"p_local": rate, "expected_difficulty": 0.0}, labels[d]) for d in common]))
+    for name, pairs in rows_out:
         s = judge_scores(pairs, near, most)
         picks = (f"near-certain picks {s['picks']:>3}, passed {_rate(s['picks_passed'], s['picks'] - s['picks_passed'])}"
                  if name != "base rate" else f"(always P(local)={rate:.2f})")
-        say(f"  {name:<10} Brier {s['brier']:.3f}   log loss {s['log_loss']:.3f}   {picks}")
+        say(f"  {name:<15} Brier {s['brier']:.3f}   log loss {s['log_loss']:.3f}   {picks}")
     say("  Lower is better, and a judge must beat the base rate to be worth asking. Labels come only from"
-        " tasks the judge sent to the coder, so both are scored on its picks; switch backends only on a"
-        " clear margin over a few dozen labels.")
+        " tasks the routing judge sent to the coder (and local mode), so both are scored on its picks;"
+        " switch judge.backend only on a clear margin over a few dozen labels.")
 
 
 def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
@@ -173,11 +192,14 @@ def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
     say("  A weak fallback rate is the case for a heavier local model behind Claude Code.")
 
     near, fallback = float(pol["local_threshold"]), float(pol["fallback_threshold"])
+    routing = cfg["judge"]["backend"]
+    # Only the routing judge's own verdicts: after a switch, the other judge's scale is not this one's.
     rows = db.execute("""
         SELECT d.verdict, a.verified FROM decisions d
         JOIN attempts a ON a.decision_id = d.id AND a.rung = 'coder'
-        WHERE d.verdict IS NOT NULL AND a.verified IS NOT NULL""").fetchall()
-    say(f"\njudge calibration on {len(rows)} labelled coder attempts")
+        WHERE d.verdict IS NOT NULL AND a.verified IS NOT NULL
+          AND COALESCE(d.judge_backend, 'semif') = ?""", (routing,)).fetchall()
+    say(f"\njudge calibration ({routing}) on {len(rows)} labelled coder attempts")
     edges = [(0.0, fallback), (fallback, near), (near, 1.0001)]
     counts = [[0, 0] for _ in edges]
     for r in rows:
@@ -189,7 +211,7 @@ def render(db: sqlite3.Connection, cfg: dict, now: float) -> str:
         say(f"  P(local) {lo:.2f}-{min(hi, 1.0):.2f}: {v:>3}/{v + f:<3} passed ({_rate(v, f)})")
     say(f"  local_threshold ({near}) belongs where the pass rate is near-certain;"
         f" fallback_threshold ({fallback}) where a try still beats paying OpenRouter.")
-    _shadow_section(db, pol, say)
+    _shadow_section(db, cfg, say)
 
     hits = db.execute("SELECT ts, until, reset_source FROM limit_hits ORDER BY ts DESC LIMIT 5").fetchall()
     if hits:

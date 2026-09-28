@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from routing import settings
 from routing.judge import WORKER
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +61,7 @@ def edited(**paths):
 def test_the_repo_itself_is_consistent():
     presets = stack.parse((ROOT / "llama" / "presets.ini").read_text())
     config = yaml.safe_load((ROOT / "profile" / "config.yaml").read_text())
-    routing = yaml.safe_load((ROOT / "profile" / "routing.yaml").read_text())
+    routing = settings.load(ROOT / "profile" / "routing.yaml")
     assert stack.problems(presets, config, routing, WORKER) == []
 
 
@@ -132,3 +133,25 @@ def test_keys_the_router_did_not_echo_were_ignored():
              "cache-type-k = q8_0\ncache-type-v = q8_0\nparallel = 1\n"
     assert stack.ignored_keys(file_keys, echoed) == []
     assert stack.ignored_keys({**file_keys, "cache-typ-k": "q8_0"}, echoed) == ["cache-typ-k"]
+
+
+def test_the_judge_switch_names_two_different_built_in_judges():
+    def judged(**choice):
+        return check(routing={"llama": {"judge_model": "judge"}, "judge": choice})
+
+    assert judged(backend="julia", shadow="semif") == []
+    assert judged(backend="semif", shadow="none") == []
+    assert any("judge.backend is 'jev'" in m for m in judged(backend="jev", shadow="none"))
+    assert any("judge.shadow is 'maybe'" in m for m in judged(backend="semif", shadow="maybe"))
+    assert any("only agree with themselves" in m for m in judged(backend="julia", shadow="julia"))
+
+
+def test_julia_alone_needs_no_judge_preset():
+    no_judge = PRESETS.split("[judge]")[0]
+    assert check(no_judge, routing={"judge": {"backend": "julia", "shadow": "none"}}) == []
+    assert any("not a preset" in m for m in check(no_judge, routing={"judge": {"backend": "julia", "shadow": "semif"}}))
+
+
+def test_the_retired_shadow_judge_block_is_reported():
+    msgs = check(routing={"llama": {"judge_model": "judge"}, "shadow_judge": {"enabled": True}})
+    assert any("no longer read" in m for m in msgs)

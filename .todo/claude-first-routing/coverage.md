@@ -133,3 +133,15 @@ Tests in `tests/test_julia.py`.
 | ledger migration | `test_older_ledgers_gain_the_shadow_column` |
 | `make check` | `check_shadow` run on the pinned Hermes against a stand-in sidecar (ok) and with none running (fails with the fix) |
 | image builds, real model answers | **Live** |
+
+## 11 · Judge switch (added after the audit)
+
+| criterion | evidence |
+|---|---|
+| either judge routes | `test_julia_routing_through_the_real_default_factories`, `test_the_switch_picks_which_judge_routes` |
+| shadow after route() answers | `test_the_shadow_runs_after_route_has_answered`, `test_the_default_runner_is_a_daemon_thread`; checked in Hermes' venv against a stand-in sidecar: `route()` 0.03 s, shadow row filled after |
+| failures ignored | `test_a_failing_shadow_is_recorded_and_routing_goes_on`, `test_a_runner_that_cannot_start_does_not_fail_route` |
+| none / same as backend not asked | `test_no_shadow_or_the_routing_judge_itself_is_not_asked` |
+| report across a switch | `test_report_scores_the_shadow_against_the_judge`, `test_after_a_switch_both_roles_count_for_each_judge` |
+| ledger migration | `test_older_ledgers_gain_the_new_columns` |
+| `make test` rules | `test_the_judge_switch_names_two_different_built_in_judges`, `test_julia_alone_needs_no_judge_preset`, `test_the_retired_shadow_judge_block_is_reported` |

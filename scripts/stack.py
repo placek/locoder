@@ -23,6 +23,9 @@ PLACEMENT = {
     "override-tensor", "ot",
     "tensor-split", "ts", "LLAMA_ARG_TENSOR_SPLIT",
 }
+# The judges route() can ask; keep in step with routing/tools.py (JUDGES, NO_SHADOW).
+JUDGES = ("semif", "julia")
+NO_SHADOW = "none"
 # Preset-only keys: the router consumes them and does not echo them back as options.
 PRESET_ONLY = {"load-on-startup"}
 DEFAULTS_SECTION = "*"
@@ -106,15 +109,31 @@ def problems(presets: Presets, config: dict, routing: dict, worker: Optional[str
         for name in sorted(n for n in listed if n and n not in names):
             found.append(f"the {provider['name']} provider lists model {name!r}, which is not a preset")
 
-    judge = ((routing.get("llama") or {}).get("judge_model")) or "judge"
-    if judge not in names:
-        found.append(f"llama.judge_model is {judge!r}, which is not a preset in llama/presets.ini")
-    elif judge in (orchestrator, child):
-        found.append(f"llama.judge_model is {judge!r}, a single-slot model the agent runs on: every judge "
-                     "query would evict its KV cache")
-    elif _int(effective(presets, judge).get("n-gpu-layers")) != 0:
-        found.append(f"the {judge} preset must set n-gpu-layers = 0: the judge runs on the CPU and leaves "
-                     "the VRAM to the orchestrator")
+    choice = routing.get("judge") or {}
+    # The fallbacks are routing/settings.py's defaults; callers normally pass settings already merged.
+    backend, shadow = choice.get("backend", "semif"), choice.get("shadow", "julia")
+    if "shadow_judge" in routing:
+        found.append("routing.yaml still has shadow_judge, which is no longer read: the judges are "
+                     "judge.backend and judge.shadow now, and Julia-1's service is julia.base_url")
+    if backend not in JUDGES:
+        found.append(f"judge.backend is {backend!r}; it must be one of {', '.join(JUDGES)}")
+    if shadow not in (*JUDGES, NO_SHADOW):
+        found.append(f"judge.shadow is {shadow!r}; it must be one of {', '.join(JUDGES)} or {NO_SHADOW}")
+    elif shadow == backend:
+        found.append(f"judge.shadow is the routing judge ({backend}): its verdicts would only agree with "
+                     f"themselves; set it to the other judge or {NO_SHADOW}")
+
+    # The SemIf judge's preset matters only while it is asked; with Julia-1 alone it may go.
+    if "semif" in (backend, shadow):
+        judge = ((routing.get("llama") or {}).get("judge_model")) or "judge"
+        if judge not in names:
+            found.append(f"llama.judge_model is {judge!r}, which is not a preset in llama/presets.ini")
+        elif judge in (orchestrator, child):
+            found.append(f"llama.judge_model is {judge!r}, a single-slot model the agent runs on: every judge "
+                         "query would evict its KV cache")
+        elif _int(effective(presets, judge).get("n-gpu-layers")) != 0:
+            found.append(f"the {judge} preset must set n-gpu-layers = 0: the judge runs on the CPU and leaves "
+                         "the VRAM to the orchestrator")
 
     for name in sorted(names):
         opts = effective(presets, name)

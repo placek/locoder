@@ -1,6 +1,6 @@
-# Julia-1, Supersonic Labs' 144M-parameter decision model, as a CPU-only HTTP service: the
-# routing plugin's shadow judge. Built by `make install` as locoder-julia:local and run by
-# locoder-julia.service on 127.0.0.1 (routing.yaml: shadow_judge.base_url).
+# Julia-1, Supersonic Labs' 144M-parameter decision model, as a CPU-only HTTP service: one of
+# the routing plugin's two judges. Built by `make install` as locoder-julia:local and run by
+# locoder-julia.service on 127.0.0.1 (routing.yaml: julia.base_url).
 #
 # The build downloads the model, checks the weights' hash, and answers one question of each
 # type, so an image that builds is an image that answers.

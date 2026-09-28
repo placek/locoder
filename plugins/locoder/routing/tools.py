@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -137,12 +138,31 @@ def hermes_conversation_root(session_id: str) -> str:
                 close()
 
 
-def shadow_judge(cfg: dict) -> Judge:
-    """The judge route() asks second and only records (routing.yaml: shadow_judge)."""
-    sc = cfg["shadow_judge"]
-    if sc["backend"] != "julia":
-        raise JudgeError(f"unknown shadow_judge.backend {sc['backend']!r}; the one built in is 'julia'")
-    return Judge(JuliaBackend(sc["base_url"], sc["timeout_s"]))
+# The judges route() can ask (routing.yaml: judge.backend routes, judge.shadow is only recorded).
+JUDGES = ("semif", "julia")
+NO_SHADOW = "none"
+
+
+def make_judge(cfg: dict, name: str) -> Judge:
+    if name == "semif":
+        return Judge(SemIfBackend(cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"]))
+    if name == "julia":
+        return Judge(JuliaBackend(cfg["julia"]["base_url"], cfg["julia"]["timeout_s"]))
+    raise JudgeError(f"unknown judge {name!r}; built in: {', '.join(JUDGES)}")
+
+
+def shadow_name(cfg: dict) -> Optional[str]:
+    """The judge to record beside the routing one, or None. Equal to the backend means none:
+    asking the same judge twice would only look like agreement."""
+    jc = cfg["judge"]
+    shadow = jc.get("shadow") or NO_SHADOW
+    return None if shadow in (NO_SHADOW, jc["backend"]) else shadow
+
+
+def _in_background(job: Callable[[], None]) -> threading.Thread:
+    thread = threading.Thread(target=job, name="locoder-shadow-judge", daemon=True)
+    thread.start()
+    return thread
 
 
 def _child_refusal() -> Optional[str]:
@@ -167,12 +187,13 @@ class Router:
 
     def __init__(self, clock: Callable[[], float] = time.time, judge_factory=None, ledger: Optional[Ledger] = None,
                  config_loader: Callable[[], dict] = settings.load,
-                 conversation_root: Callable[[str], str] = hermes_conversation_root, shadow_factory=None):
+                 conversation_root: Callable[[str], str] = hermes_conversation_root, shadow_factory=None,
+                 shadow_runner: Callable[[Callable[[], None]], Any] = _in_background):
         self.clock = clock
         self._ledger = ledger
-        self._judge_factory = judge_factory or (lambda cfg: Judge(SemIfBackend(
-            cfg["llama"]["base_url"], cfg["llama"]["judge_model"], cfg["llama"]["timeout_s"])))
-        self._shadow_factory = shadow_factory or shadow_judge
+        self._judge_factory = judge_factory or (lambda cfg: make_judge(cfg, cfg["judge"]["backend"]))
+        self._shadow_factory = shadow_factory or (lambda cfg: make_judge(cfg, shadow_name(cfg)))
+        self._shadow_runner = shadow_runner
         self._load = config_loader
         self._conversation_root = conversation_root
         # Keyed by conversation root; a conversation never switched is "auto".
@@ -217,7 +238,6 @@ class Router:
             verdict = self._judge_factory(cfg).judge(brief)
         except JudgeError as exc:
             judge_error = str(exc)
-        shadow = self._shadow(cfg, brief)
         claude = policy.claude_state(self.ledger, self.clock())
         d = policy.decide(verdict, claude, cfg, judge_error, mode=mode)
         vd, cd = verdict_dict(verdict), claude.as_dict()
@@ -227,26 +247,40 @@ class Router:
         head = git_head(workdir) if workdir else None
         decision_id = self.ledger.add_decision(brief, workdir, d.rung, d.reason, vd, cd,
                                                commit_sha=head[0] if head else None,
-                                               dirty=head[1] if head else None, mode=mode, shadow=shadow)
+                                               dirty=head[1] if head else None, mode=mode,
+                                               judge_backend=cfg["judge"]["backend"])
+        self._ask_shadow(cfg, brief, decision_id)
         out = {"decision_id": decision_id, "rung": d.rung, "chain": d.chain, "reason": d.reason,
                "mode": mode, "judge": vd, "claude": cd, "graft": graft_result}
         if d.rung == policy.HAND_BACK:
             out["next"] = "Nothing may run this task now: tell the user why (the reason) and stop."
         return _json(out)
 
-    def _shadow(self, cfg: dict, brief: str) -> Optional[dict]:
-        """The shadow judge's verdict, or why there is none. Only ever recorded: nothing it
-        returns or raises may reach the decision, so every failure is caught here."""
-        sc = cfg["shadow_judge"]
-        if not sc.get("enabled"):
-            return None
-        start = time.monotonic()
-        try:
-            out = {"backend": sc["backend"], "verdict": verdict_dict(self._shadow_factory(cfg).judge(brief))}
-        except Exception as exc:  # noqa: BLE001 - see the docstring
-            out = {"backend": sc.get("backend"), "error": f"{type(exc).__name__}: {exc}"[:300]}
-        out["ms"] = round((time.monotonic() - start) * 1000)
-        return out
+    def _ask_shadow(self, cfg: dict, brief: str, decision_id: str) -> None:
+        """Ask the shadow judge once the decision is recorded, off the caller's path, and add its
+        verdict (or why there is none) to that decision. It is only ever recorded: it cannot
+        change the decision, delay route(), or fail it, so everything it raises is caught."""
+        name = shadow_name(cfg)
+        if name is None:
+            return
+        path = self.ledger.path
+
+        def job() -> None:
+            start = time.monotonic()
+            try:
+                out = {"backend": name, "verdict": verdict_dict(self._shadow_factory(cfg).judge(brief))}
+            except Exception as exc:  # noqa: BLE001 - see the docstring
+                out = {"backend": name, "error": f"{type(exc).__name__}: {exc}"[:300]}
+            out["ms"] = round((time.monotonic() - start) * 1000)
+            with contextlib.suppress(Exception):
+                ledger = Ledger(path)  # its own connection: this may run on another thread
+                try:
+                    ledger.set_shadow(decision_id, out)
+                finally:
+                    ledger.close()
+
+        with contextlib.suppress(Exception):
+            self._shadow_runner(job)
 
     # -- escalate -------------------------------------------------------------
     async def escalate(self, args: Dict[str, Any], **kwargs: Any) -> str:
@@ -350,6 +384,7 @@ class Router:
         now = self.clock()
         week_start, _ = policy.week_bounds(now, cfg)
         return _json({"mode": self._mode(kwargs), "claude": policy.claude_state(self.ledger, now).as_dict(),
+                      "judge": {"backend": cfg["judge"]["backend"], "shadow": shadow_name(cfg)},
                       "this_week": self.ledger.stats(week_start)})
 
     def set_mode(self, args: Dict[str, Any], **kwargs: Any) -> str:

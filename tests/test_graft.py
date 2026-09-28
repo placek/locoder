@@ -153,7 +153,7 @@ class _Judge:
 def test_route_wires_before_recording_the_commit(world, tmp_path):
     router = Router(judge_factory=lambda _c: _Judge(), ledger=Ledger(tmp_path / "l.db"),
                     config_loader=lambda: world["cfg"], conversation_root=lambda s: s,
-                    shadow_factory=lambda _c: _Judge())
+                    shadow_factory=lambda _c: _Judge(), shadow_runner=lambda job: job())
     d = json.loads(router.route({"brief": "task", "workdir": str(world["repo"])}))
     assert d["graft"]["status"] == "wired"
     assert router.ledger.decision(d["decision_id"])["commit_sha"] == d["graft"]["commit"]

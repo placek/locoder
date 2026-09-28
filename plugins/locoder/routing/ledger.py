@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     commit_sha TEXT,         -- workdir HEAD at route() time; with the brief, makes the task replayable
     dirty INTEGER,           -- 1 if the workdir had uncommitted changes then
     mode TEXT,               -- the session's routing mode: auto, claude or local
-    shadow TEXT              -- JSON: the shadow judge's verdict or error; recorded, never acted on
+    shadow TEXT,             -- JSON: the shadow judge's backend and verdict or error; never acted on
+    judge_backend TEXT       -- which judge made `verdict`: semif or julia (NULL on older rows: semif)
 );
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +65,7 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         self._add_missing_columns("decisions", {"claude": "TEXT", "commit_sha": "TEXT", "dirty": "INTEGER", "mode": "TEXT",
-                                                "shadow": "TEXT"})
+                                                "shadow": "TEXT", "judge_backend": "TEXT"})
         self._add_missing_columns("limit_hits", {"reset_source": "TEXT", "raw": "TEXT"})
 
     def _add_missing_columns(self, table: str, columns: Dict[str, str]) -> None:
@@ -79,17 +80,26 @@ class Ledger:
     def add_decision(self, brief: str, workdir: Optional[str], rung: str, reason: str,
                      verdict: Optional[dict], claude: Optional[dict],
                      commit_sha: Optional[str] = None, dirty: Optional[bool] = None,
-                     mode: str = "auto", shadow: Optional[dict] = None) -> str:
+                     mode: str = "auto", shadow: Optional[dict] = None,
+                     judge_backend: Optional[str] = None) -> str:
         decision_id = uuid.uuid4().hex[:12]
         with self.db:
             self.db.execute(
                 "INSERT INTO decisions (id, ts, brief, workdir, rung, reason, verdict, claude, commit_sha, dirty, mode,"
-                " shadow) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " shadow, judge_backend) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (decision_id, time.time(), brief, workdir, rung, reason,
                  json.dumps(verdict) if verdict else None, json.dumps(claude) if claude else None,
-                 commit_sha, _tri(dirty), mode, json.dumps(shadow) if shadow else None),
+                 commit_sha, _tri(dirty), mode, json.dumps(shadow) if shadow else None, judge_backend),
             )
         return decision_id
+
+    def set_shadow(self, decision_id: str, shadow: dict) -> None:
+        """The shadow judge answers after the decision is made; its verdict joins the row then."""
+        with self.db:
+            self.db.execute("UPDATE decisions SET shadow=? WHERE id=?", (json.dumps(shadow), decision_id))
+
+    def close(self) -> None:
+        self.db.close()
 
     def add_attempt(self, rung: str, decision_id: Optional[str] = None, ok: Optional[bool] = None,
                     verified: Optional[bool] = None, limit_hit: bool = False, cost: float = 0.0,
