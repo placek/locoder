@@ -20,7 +20,7 @@ from pathlib import Path
 
 import stack  # scripts/stack.py: the settings that must agree across presets, config and routing
 
-REQUIRED_PLUGINS = {"locoder/routing": {"route", "escalate", "route_outcome", "routing_status", "routing_mode"},
+REQUIRED_PLUGINS = {"trismegistos/routing": {"route", "escalate", "route_outcome", "routing_status", "routing_mode"},
                     "web/defuddle": {"web_research"}}
 
 failures: list[str] = []
@@ -65,7 +65,7 @@ def check_plugins() -> None:
     from toolsets import get_toolset
 
     coding = set((get_toolset("coding") or {}).get("tools", []))
-    missing = REQUIRED_PLUGINS["locoder/routing"] - coding
+    missing = REQUIRED_PLUGINS["trismegistos/routing"] - coding
     if missing:
         fail(f"coding toolset lacks {sorted(missing)}: under coding_context: focus the agent would not see them")
     else:
@@ -84,7 +84,7 @@ def check_profile() -> None:
     from hermes_yaml import safe_load
 
     cfg = safe_load((home / "config.yaml").read_text())
-    sys.path.insert(0, str(home / "plugins" / "locoder"))
+    sys.path.insert(0, str(home / "plugins" / "trismegistos"))
     from routing import settings
     from routing.judge import WORKER
 
@@ -98,9 +98,9 @@ def check_profile() -> None:
 
 
 def _presets() -> stack.Presets:
-    path = os.environ.get("LOCODER_PRESETS")
+    path = os.environ.get("TRISMEGISTOS_PRESETS")
     if not path:
-        sys.exit("LOCODER_PRESETS is not set: run this through make check")
+        sys.exit("TRISMEGISTOS_PRESETS is not set: run this through make check")
     return stack.parse(Path(path).read_text())
 
 
@@ -116,22 +116,22 @@ def check_tools() -> None:
         ok("OPENROUTER_API_KEY present")
     else:
         warn("OPENROUTER_API_KEY not set: the openrouter rung's Hermes run cannot reach OpenRouter")
-    if shutil.which("locoder"):
-        ok("locoder on PATH (the openrouter rung runs it one-shot)")
+    if shutil.which("trismegistos"):
+        ok("trismegistos on PATH (the openrouter rung runs it one-shot)")
     else:
-        warn("locoder not on PATH: the openrouter rung cannot start (set openrouter.hermes_bin)")
+        warn("trismegistos not on PATH: the openrouter rung cannot start (set openrouter.hermes_bin)")
     defuddle = os.environ.get("HERMES_DEFUDDLE_BIN", "")
     if defuddle and os.access(defuddle, os.X_OK):
         ok(f"defuddle: {defuddle}")
     else:
         fail(f"defuddle binary not executable: {defuddle or '(HERMES_DEFUDDLE_BIN unset)'}")
-    want = os.environ.get("LOCODER_GRAFT_VERSION", "")
+    want = os.environ.get("TRISMEGISTOS_GRAFT_VERSION", "")
     graft = shutil.which("graft")
     if graft:
         _graft_version("host", [graft, "--version"], want)
     else:
         fail("graft not on PATH: route() cannot wire projects (make graft)")
-    image = os.environ.get("LOCODER_SANDBOX_IMAGE", "locoder-sandbox:local")
+    image = os.environ.get("TRISMEGISTOS_SANDBOX_IMAGE", "trismegistos-sandbox:local")
     if shutil.which("docker"):
         res = subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=30)
         (ok if res.returncode == 0 else fail)(f"sandbox image {image}" + ("" if res.returncode == 0 else " not built"))
@@ -160,7 +160,7 @@ def _graft_version(where: str, argv: list, want: str) -> None:
 
 def check_llama() -> None:
     print("llama.cpp router")
-    sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "locoder"))
+    sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "trismegistos"))
     from routing import settings
     from routing.judge import Judge, JudgeError, SemIfBackend
 
@@ -172,7 +172,7 @@ def check_llama() -> None:
         with urllib.request.urlopen(base + "/models", timeout=10) as resp:
             served = {m.get("id"): m for m in json.loads(resp.read()).get("data", [])}
     except OSError as exc:
-        fail(f"{base}/models unreachable ({exc}); is locoder-llama.service running?")
+        fail(f"{base}/models unreachable ({exc}); is trismegistos-llama.service running?")
         return
     missing = wanted - served.keys()
     (fail if missing else ok)(f"presets served: {sorted(wanted & served.keys())}"
@@ -253,7 +253,7 @@ def check_julia() -> None:
     """Julia-1's service. Routing on it, a stopped container means every task starts on Claude
     Code; as the shadow, route() survives it but the comparison it is there for gets a gap."""
     print("julia-1")
-    sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "locoder"))
+    sys.path.insert(0, str(Path(os.environ["HERMES_HOME"]) / "plugins" / "trismegistos"))
     from routing import settings
     from routing.judge import JudgeError
     from routing.tools import make_judge
@@ -269,7 +269,7 @@ def check_julia() -> None:
         with urllib.request.urlopen(base + "/health", timeout=10) as resp:
             info = json.loads(resp.read())
     except OSError as exc:
-        fail(f"{base}/health unreachable ({exc}): make julia && systemctl --user start locoder-julia, "
+        fail(f"{base}/health unreachable ({exc}): make julia && systemctl --user start trismegistos-julia, "
              "or stop asking it (judge.backend / judge.shadow)")
         return
     ok(f"{info.get('repo')}@{str(info.get('commit'))[:12]}, weights {str(info.get('weights_sha256'))[:12]}…, "

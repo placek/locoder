@@ -89,7 +89,7 @@ def load() -> tuple:
     from julia.typed import predict_typed
 
     engine = load_model(str(CHECKPOINT), device="cpu", **SETTINGS)
-    build = CHECKPOINT / "locoder-build.json"
+    build = CHECKPOINT / "trismegistos-build.json"
     info = json.loads(build.read_text()) if build.is_file() else {}
     info.update(SETTINGS, threads=torch.get_num_threads())
     return (lambda state, questions: predict_typed(engine, state, questions)), info

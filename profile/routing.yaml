@@ -1,6 +1,6 @@
-# Routing settings for the locoder/routing plugin. Linked into the Hermes home
+# Routing settings for the trismegistos/routing plugin. Linked into the Hermes home
 # as routing.yaml; re-read on every tool call, so edits apply without restart.
-# Anything left out falls back to the defaults in plugins/locoder/routing/settings.py.
+# Anything left out falls back to the defaults in plugins/trismegistos/routing/settings.py.
 
 llama:
   base_url: http://127.0.0.1:8088/v1
@@ -49,7 +49,7 @@ claude:
 
 # Two judges are built in:
 #   semif: llama.judge_model above, a small chat model read through its logprobs;
-#   julia: Julia-1, a decision model on the CPU (the locoder-julia service, julia/).
+#   julia: Julia-1, a decision model on the CPU (the trismegistos-julia service, julia/).
 # `backend` routes. `shadow` is asked too, after the decision, and only recorded: it never
 # changes a decision or slows route() down, and if it is down the ledger records the error.
 # `make report` scores both against the tasks that passed or failed. To switch, swap the two
@@ -75,7 +75,7 @@ graft:
 # via the `openrouter` custom provider in config.yaml (OPENROUTER_API_KEY in .env).
 openrouter:
   enabled: true
-  hermes_bin: locoder
+  hermes_bin: trismegistos
   provider: custom:openrouter
   # A placeholder until the bake-off picks one. Use a concrete model id: Hermes
   # prices runs from OpenRouter's model list, and an unlisted id costs "unknown".

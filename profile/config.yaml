@@ -485,14 +485,14 @@ custom_providers:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Hermes runs on the host; the commands the agent runs do not. Every terminal()
-# call executes in the locoder-sandbox container (sandbox/Dockerfile, built by
+# call executes in the trismegistos-sandbox container (sandbox/Dockerfile, built by
 # `make install`). Projects are mounted at the SAME path as on the host, so a
 # workdir the agent sees is a workdir escalate() can hand to Claude Code.
 terminal:
   backend: docker
   cwd: /srv/data/projects
   temp_dir: ''
-  docker_image: locoder-sandbox:local
+  docker_image: trismegistos-sandbox:local
   docker_volumes:
     - /srv/data/projects:/srv/data/projects
   # Files the agent writes stay owned by you, not root.
@@ -674,10 +674,10 @@ plugins:
     # Local user plugin (plugins/web/defuddle/ in this repo, symlinked to the
     # profile's plugins/ dir). Pinned as web.extract_backend below.
     - web/defuddle
-    # Local user plugin (plugins/locoder/routing/): route, escalate,
+    # Local user plugin (plugins/trismegistos/routing/): route, escalate,
     # route_outcome, routing_status, routing_mode. Settings live in routing.yaml
     # beside this file.
-    - locoder/routing
+    - trismegistos/routing
     # Keyless search, one more member of the rescue ring. Possible now that
     # Hermes lives in a uv venv (`make install` adds the ddgs extra); the old
     # Nix build shipped a sealed interpreter that could never import it.

@@ -160,7 +160,7 @@ def shadow_name(cfg: dict) -> Optional[str]:
 
 
 def _in_background(job: Callable[[], None]) -> threading.Thread:
-    thread = threading.Thread(target=job, name="locoder-shadow-judge", daemon=True)
+    thread = threading.Thread(target=job, name="trismegistos-shadow-judge", daemon=True)
     thread.start()
     return thread
 

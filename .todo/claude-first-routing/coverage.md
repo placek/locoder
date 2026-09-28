@@ -12,7 +12,7 @@ Checked against the pinned Hermes (`7b761da`) installed in a scratch container:
 - `skills list` shows `routing-mode` enabled.
 - Hermes' tool registry passes `session_id` to the handlers.
 - `hermes_state.SessionDB` resolves a twice-rotated session to its lineage root.
-- With `LOCODER_ROUTING_CHILD=1`, the routing tools refuse when dispatched through Hermes.
+- With `TRISMEGISTOS_ROUTING_CHILD=1`, the routing tools refuse when dispatched through Hermes.
 - The CLI accepts the OpenRouter rung's command.
 
 ## Tickets
@@ -93,7 +93,7 @@ Checked against the pinned Hermes (`7b761da`) installed in a scratch container:
 
 ## Gaps found by the audit, all fixed
 
-1. **The OpenRouter child could re-delegate.** It got `-t coding` (which has `delegate_task`), `SOUL.md` and the auto-loaded `delegate` skill. It now gets `-t file,terminal,web,todo`, a worker preamble and `LOCODER_ROUTING_CHILD=1`, and the plugin refuses when that is set.
+1. **The OpenRouter child could re-delegate.** It got `-t coding` (which has `delegate_task`), `SOUL.md` and the auto-loaded `delegate` skill. It now gets `-t file,terminal,web,todo`, a worker preamble and `TRISMEGISTOS_ROUTING_CHILD=1`, and the plugin refuses when that is set.
 2. **The routing mode was lost on compression.** Hermes rotates the session id when it compresses. Modes are now keyed by the conversation's lineage root.
 3. **A mid-run limit hit could re-run a coder that had already failed.** Rungs this decision has already failed are now dropped from the handed-back chain.
 4. **`escalate()` ignored the mode.** It now refuses both paid rungs in `local`, and OpenRouter in `claude`. In `claude` mode while Claude Code is locked out, it hands the task back.

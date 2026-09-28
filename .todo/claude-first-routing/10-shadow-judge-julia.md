@@ -18,7 +18,7 @@ predicts the labels better.
 - **A sidecar, `julia/`.** The upstream PyTorch runtime, which ships inside the model
   repository, runs on the CPU with the evaluated settings: 1,024 tokens, a 512-token head,
   strict encoding. It sits behind a stdlib HTTP server on `127.0.0.1:8089`, runs as the
-  `locoder-julia` user service, and uses two threads so the orchestrator's CPU experts keep
+  `trismegistos-julia` user service, and uses two threads so the orchestrator's CPU experts keep
   the rest. The build:
   - downloads the model;
   - checks the weights' SHA-256;

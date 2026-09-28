@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "locoder"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins" / "trismegistos"))
 from routing import policy, settings  # noqa: E402
 from routing.ledger import Ledger  # noqa: E402
 

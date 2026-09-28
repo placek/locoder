@@ -42,11 +42,11 @@ plugin cannot use it. No named delegation targets or per-agent model profiles ex
 **Mechanism: a headless one-shot Hermes run**, spawned by the routing plugin:
 
 ```
-locoder -z "<brief>" -m <openrouter model> --provider custom:openrouter \
+trismegistos -z "<brief>" -m <openrouter model> --provider custom:openrouter \
         --in <workdir> --usage-file <tmp>/usage.json -t coding
 ```
 
-- The `locoder` wrapper sets `HERMES_HOME` and sources the profile `.env`, so the
+- The `trismegistos` wrapper sets `HERMES_HOME` and sources the profile `.env`, so the
   run uses this profile's config, skills and plugins. `-p` is not needed.
 - Use `custom:openrouter`, not bare `openrouter`, which is a built-in provider and
   bypasses the profile's `custom_providers` entry
@@ -96,4 +96,4 @@ OpenAI client setup trips on (`_eval_type() got an unexpected keyword argument
 plugin loads, the routing tools), and a one-shot run still reads `SOUL.md` and the
 auto-loaded `delegate` skill, so the child could re-delegate or escalate. The rung now
 passes `-t file,terminal,web,todo`, prefixes the brief with a worker preamble, and sets
-`LOCODER_ROUTING_CHILD=1`, which makes the routing plugin refuse inside the child.
+`TRISMEGISTOS_ROUTING_CHILD=1`, which makes the routing plugin refuse inside the child.

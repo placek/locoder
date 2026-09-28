@@ -20,7 +20,7 @@ Acceptance: `test -f done.txt`
 Constraints: touch nothing outside `done.txt`; no refactors.
 """
 
-# Stands in for `locoder -z`: what it does depends on the model it is given.
+# Stands in for `trismegistos -z`: what it does depends on the model it is given.
 FAKE_HERMES = """#!/usr/bin/env python3
 import json, os, sys
 argv = sys.argv[1:]
@@ -62,12 +62,12 @@ def world(tmp_path, monkeypatch):
     git(repo, "commit", "-q", "-m", "r")
     sha = git(repo, "rev-parse", "HEAD").strip()
 
-    hermes = tmp_path / "locoder"
+    hermes = tmp_path / "trismegistos"
     hermes.write_text(FAKE_HERMES)
     hermes.chmod(hermes.stat().st_mode | stat.S_IEXEC)
     routing_yaml = tmp_path / "routing.yaml"
     routing_yaml.write_text(f"openrouter:\n  hermes_bin: {hermes}\nclaude:\n  workdir_roots: [{tmp_path}]\n")
-    monkeypatch.setenv("LOCODER_ROUTING_CONFIG", str(routing_yaml))
+    monkeypatch.setenv("TRISMEGISTOS_ROUTING_CONFIG", str(routing_yaml))
 
     led = Ledger(tmp_path / "ledger.db")
     led.add_decision(BRIEF, str(repo), "claude", "r", None, None, commit_sha=sha, dirty=False)

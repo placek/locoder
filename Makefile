@@ -1,4 +1,4 @@
-# locoder — local coding agent stack: llama.cpp router + pinned Hermes + profile.
+# trismegistos — local coding agent stack: llama.cpp router + pinned Hermes + profile.
 #
 # `make install` builds everything into place, like any other build: each
 # target is a real file (a symlink, a unit, a venv stamp, an image stamp) and
@@ -20,8 +20,8 @@ SHELL := bash
 .DEFAULT_GOAL := help
 
 REPO        := $(abspath .)
-PREFIX      ?= $(HOME)/.local/share/locoder
-STATE       ?= $(HOME)/.local/state/locoder
+PREFIX      ?= $(HOME)/.local/share/trismegistos
+STATE       ?= $(HOME)/.local/state/trismegistos
 HERMES_HOME ?= $(STATE)/home
 BIN_DIR     ?= $(HOME)/.local/bin
 UNIT_DIR    ?= $(HOME)/.config/systemd/user
@@ -33,11 +33,11 @@ PORT        ?= 8088
 GPU_ARGS    ?= --device=nvidia.com/gpu=all
 DOCKER      ?= $(shell command -v docker)
 LLAMA_TAG   ?= ghcr.io/ggml-org/llama.cpp:server-cuda
-SANDBOX_IMAGE := locoder-sandbox:local
+SANDBOX_IMAGE := trismegistos-sandbox:local
 # Julia-1, one of the two judges (routing.yaml: judge, julia). The weights hash is SupersonicLabs/Julia-1's
 # model.safetensors: the build fails if upstream changes it. Pin JULIA_REVISION to the commit
 # `make status` reports once you trust it.
-JULIA_IMAGE          := locoder-julia:local
+JULIA_IMAGE          := trismegistos-julia:local
 JULIA_PORT           ?= 8089
 JULIA_REPO           ?= SupersonicLabs/Julia-1
 JULIA_REVISION       ?= main
@@ -51,24 +51,24 @@ GRAFT_VERSION    ?= 0.20.0
 REV              ?= main
 
 HERMES_REV    := $(shell cat hermes.rev)
-HERMES_STAMP  := $(PREFIX)/hermes/.locoder-rev
+HERMES_STAMP  := $(PREFIX)/hermes/.trismegistos-rev
 HERMES_PY     := $(PREFIX)/hermes/.venv/bin/python
 DEFUDDLE_BIN  := $(PREFIX)/tools/defuddle/node_modules/.bin/defuddle
 GRAFT_DIR     := $(PREFIX)/tools/graft
-GRAFT_STAMP   := $(GRAFT_DIR)/.locoder-$(GRAFT_VERSION)
+GRAFT_STAMP   := $(GRAFT_DIR)/.trismegistos-$(GRAFT_VERSION)
 LLAMA_IMAGE    = $(shell cat llama/image.lock)
 
 PROFILE_FILES := config.yaml SOUL.md routing.yaml
 PROFILE_LINKS := $(addprefix $(HERMES_HOME)/,$(PROFILE_FILES))
 DIR_LINKS     := $(HERMES_HOME)/skills $(HERMES_HOME)/plugins
-LLAMA_UNIT    := $(UNIT_DIR)/locoder-llama.service
-JULIA_UNIT    := $(UNIT_DIR)/locoder-julia.service
-UNITS         := locoder-llama.service locoder-julia.service
-WRAPPER       := $(BIN_DIR)/locoder
+LLAMA_UNIT    := $(UNIT_DIR)/trismegistos-llama.service
+JULIA_UNIT    := $(UNIT_DIR)/trismegistos-julia.service
+UNITS         := trismegistos-llama.service trismegistos-julia.service
+WRAPPER       := $(BIN_DIR)/trismegistos
 
 CHECK_ENV = HERMES_HOME=$(HERMES_HOME) HERMES_DEFUDDLE_BIN=$(DEFUDDLE_BIN) \
-            LOCODER_PRESETS=$(REPO)/llama/presets.ini LOCODER_SANDBOX_IMAGE=$(SANDBOX_IMAGE) \
-            LOCODER_GRAFT_VERSION=$(GRAFT_VERSION) PATH=$(GRAFT_DIR)/node_modules/.bin:$$PATH
+            TRISMEGISTOS_PRESETS=$(REPO)/llama/presets.ini TRISMEGISTOS_SANDBOX_IMAGE=$(SANDBOX_IMAGE) \
+            TRISMEGISTOS_GRAFT_VERSION=$(GRAFT_VERSION) PATH=$(GRAFT_DIR)/node_modules/.bin:$$PATH
 
 .PHONY: help install hermes profile llama julia sandbox defuddle graft wrapper enable disable restart \
         status logs check check-offline test bump tui report bakeoff pin-llama uninstall
@@ -123,7 +123,7 @@ graft: $(GRAFT_STAMP)
 $(GRAFT_STAMP):
 	npm install --silent --no-audit --no-fund --prefix $(GRAFT_DIR) @nanonets/graft@$(GRAFT_VERSION)
 	test -x $(GRAFT_DIR)/node_modules/.bin/graft
-	rm -f $(GRAFT_DIR)/.locoder-* && touch $@
+	rm -f $(GRAFT_DIR)/.trismegistos-* && touch $@
 
 # -- Terminal sandbox image ------------------------------------------------------
 sandbox: $(STATE)/sandbox-$(GRAFT_VERSION).stamp
@@ -139,11 +139,11 @@ julia: $(JULIA_UNIT) $(STATE)/julia.stamp
 $(STATE)/julia.stamp: julia/Dockerfile julia/fetch.py julia/server.py Makefile
 	$(DOCKER) build --quiet --build-arg JULIA_REPO=$(JULIA_REPO) --build-arg JULIA_REVISION=$(JULIA_REVISION) \
 	    --build-arg JULIA_WEIGHTS_SHA256=$(JULIA_WEIGHTS_SHA256) --tag $(JULIA_IMAGE) julia
-	@if systemctl --user is-active --quiet locoder-julia; then \
-	    echo "julia image rebuilt: restarting locoder-julia"; systemctl --user restart locoder-julia; fi
+	@if systemctl --user is-active --quiet trismegistos-julia; then \
+	    echo "julia image rebuilt: restarting trismegistos-julia"; systemctl --user restart trismegistos-julia; fi
 	@mkdir -p $(STATE) && touch $@
 
-$(JULIA_UNIT): systemd/locoder-julia.service.in Makefile | $(UNIT_DIR)
+$(JULIA_UNIT): systemd/trismegistos-julia.service.in Makefile | $(UNIT_DIR)
 	sed -e 's|@REPO@|$(REPO)|g' -e 's|@DOCKER@|$(DOCKER)|g' -e 's|@JULIA_PORT@|$(JULIA_PORT)|g' \
 	    -e 's|@IMAGE@|$(JULIA_IMAGE)|g' $< > $@
 	systemctl --user daemon-reload
@@ -160,7 +160,7 @@ pin-llama:
 	$(DOCKER) image inspect --format '{{index .RepoDigests 0}}' $(LLAMA_TAG) > llama/image.lock
 	@echo "llama/image.lock -> $$(cat llama/image.lock); commit it"
 
-$(LLAMA_UNIT): systemd/locoder-llama.service.in llama/image.lock Makefile | $(UNIT_DIR)
+$(LLAMA_UNIT): systemd/trismegistos-llama.service.in llama/image.lock Makefile | $(UNIT_DIR)
 	sed -e 's|@REPO@|$(REPO)|g' -e 's|@STATE@|$(STATE)|g' -e 's|@MODELS@|$(MODELS)|g' \
 	    -e 's|@PORT@|$(PORT)|g' -e 's|@DOCKER@|$(DOCKER)|g' -e 's|@GPU_ARGS@|$(GPU_ARGS)|g' \
 	    -e 's|@UID@|$(shell id -u)|g' -e 's|@GID@|$(shell id -g)|g' -e 's|@IMAGE@|$(LLAMA_IMAGE)|g' \
@@ -169,14 +169,14 @@ $(LLAMA_UNIT): systemd/locoder-llama.service.in llama/image.lock Makefile | $(UN
 
 # Presets are read at startup: restart a running router when they change.
 $(STATE)/presets.stamp: llama/presets.ini
-	@if systemctl --user is-active --quiet locoder-llama; then \
-	    echo "presets changed: restarting locoder-llama"; systemctl --user restart locoder-llama; fi
+	@if systemctl --user is-active --quiet trismegistos-llama; then \
+	    echo "presets changed: restarting trismegistos-llama"; systemctl --user restart trismegistos-llama; fi
 	@mkdir -p $(STATE) && touch $@
 
 # -- Entry point -----------------------------------------------------------------------
 wrapper: $(WRAPPER)
 
-$(WRAPPER): bin/locoder.in Makefile | $(BIN_DIR)
+$(WRAPPER): bin/trismegistos.in Makefile | $(BIN_DIR)
 	sed -e 's|@HERMES_HOME@|$(HERMES_HOME)|g' -e 's|@PREFIX@|$(PREFIX)|g' $< > $@
 	chmod +x $@
 
@@ -198,7 +198,7 @@ status:
 	    'import json,sys; h=json.load(sys.stdin); print("julia:", h.get("repo"), h.get("commit"))' || true
 
 logs:
-	journalctl --user -u locoder-llama.service -u locoder-julia.service -f
+	journalctl --user -u trismegistos-llama.service -u trismegistos-julia.service -f
 
 tui:
 	@exec $(WRAPPER)

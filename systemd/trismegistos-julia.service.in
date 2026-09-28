@@ -1,18 +1,18 @@
 [Unit]
-Description=locoder: Julia-1 judge (CPU)
+Description=trismegistos: Julia-1 judge (CPU)
 Documentation=file://@REPO@/README.md
 
 [Service]
 Type=simple
-ExecStartPre=-@DOCKER@ rm -f locoder-julia
+ExecStartPre=-@DOCKER@ rm -f trismegistos-julia
 # Read-only root: the model and runtime are baked into the image (which runs with the
 # Hugging Face libraries offline), and it answers only on the published loopback port.
-ExecStart=@DOCKER@ run --rm --name locoder-julia \
+ExecStart=@DOCKER@ run --rm --name trismegistos-julia \
     --read-only --tmpfs /tmp \
     --publish 127.0.0.1:@JULIA_PORT@:8080 \
     --cpus 2 --memory 2g \
     @IMAGE@
-ExecStop=@DOCKER@ stop --time 10 locoder-julia
+ExecStop=@DOCKER@ stop --time 10 trismegistos-julia
 Restart=on-failure
 RestartSec=10
 

@@ -315,7 +315,7 @@ def test_subscription_env_strips_api_billing_vars_but_keeps_the_login_dir():
 
 def test_openrouter_command_runs_this_profile_one_shot(tmp_path):
     cmd = backends.command(cfg(), "openrouter", "do it", usage_file=tmp_path / "u.json", workdir=tmp_path)
-    assert cmd == ["locoder", "-z", backends.CHILD_PREAMBLE + "do it", "-m", "deepseek/deepseek-v4.1-flash",
+    assert cmd == ["trismegistos", "-z", backends.CHILD_PREAMBLE + "do it", "-m", "deepseek/deepseek-v4.1-flash",
                    "--provider", "custom:openrouter", "--in", str(tmp_path),
                    "--usage-file", str(tmp_path / "u.json"), "-t", "file,terminal,web,todo"]
     assert "claude" not in cmd
@@ -395,7 +395,7 @@ def router(tmp_path, monkeypatch):
     claude = tmp_path / "claude"
     claude.write_text(FAKE_CLAUDE)
     claude.chmod(claude.stat().st_mode | stat.S_IEXEC)
-    hermes = tmp_path / "locoder"
+    hermes = tmp_path / "trismegistos"
     hermes.write_text(FAKE_HERMES)
     hermes.chmod(hermes.stat().st_mode | stat.S_IEXEC)
     mode = tmp_path / "mode"

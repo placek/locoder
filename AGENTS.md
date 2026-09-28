@@ -1,6 +1,6 @@
 # AGENTS.md
 
-The locoder stack: llama.cpp router, pinned Hermes, the `locoder` profile, and
+The trismegistos stack: llama.cpp router, pinned Hermes, the `trismegistos` profile, and
 the routing plugin. See [README.md](./README.md) for how the parts fit.
 
 ## This checkout is live
