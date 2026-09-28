@@ -8,6 +8,12 @@ skills/.curator_ledger.jsonl
 skills/.archive/
 skills/.curator_backups/
 
+# Bundled skills Hermes syncs in (skills/.bundled_manifest names them). The repo's
+# own skills are hand-authored and tracked; these are machine-synced copies that
+# .no-bundled-skills was meant to keep out, so they stay untracked rather than
+# showing up as a spurious diff after each sync.
+skills/autonomous-ai-agents/
+
 # Python bytecode from the plugins Hermes loads out of plugins/, and from tests.
 __pycache__/
 *.pyc
