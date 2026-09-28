@@ -15,3 +15,6 @@ __pycache__/
 
 # Secrets live in $HERMES_HOME/.env, never here.
 .env
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
